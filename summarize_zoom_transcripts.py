@@ -26,7 +26,7 @@ import logging
 import unicodedata
 from typing import IO
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from termcolor import colored
 import openai
 
@@ -159,6 +159,7 @@ def safe_write(path: str) -> IO[str]:
                 break
             counter += 1
 
+    info(f"Writing {path}.")
     f = open(path, "w", encoding="utf-8")
     try:
         yield f
@@ -170,8 +171,9 @@ def safe_write(path: str) -> IO[str]:
 
 def clean_filename(filename: str) -> str:
     """
-    Sanitizes filenames by replacing sequences of non-alphanumeric characters
-    (except . _ -) with dashes. Helps ensure filesystem safety and easier selection.
+    Cleans a filename by replacing any sequence of characters that are not
+    letters, digits, or dots with a single dash. Collapses multiple dashes
+    and trims leading/trailing dashes or underscores.
 
     Args:
         filename (str): Original filename.
@@ -181,8 +183,11 @@ def clean_filename(filename: str) -> str:
     """
     name, ext = os.path.splitext(filename)
     name = unicodedata.normalize("NFKD", name)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name)
+    # Replace any run of characters that are NOT A-Z, a-z, 0-9, or dot with '-'
+    name = re.sub(r"[^A-Za-z0-9.]+", "-", name)
+    # Collapse multiple dashes
     name = re.sub(r"-+", "-", name)
+    # Trim leading/trailing dashes or underscores
     name = name.strip("-_")
     return name + ext
 
@@ -201,6 +206,7 @@ def read_openai_api_key() -> str:
     config_path = os.path.expanduser("~/.config/openai.cfg")
     if not os.path.isfile(config_path):
         raise FileNotFoundError(f"OpenAI config file not found at {config_path}")
+    info(f"Reading config file: {config_path}")
     with open(config_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -260,6 +266,7 @@ def parse_chat_file(chat_file_path: str) -> list[tuple[str, str, str]]:
         list[tuple]: Parsed chat entries.
     """
     chat_entries = []
+    # Only keep chat entries to everyone. Do not keep private chats.
     pattern = re.compile(r'^(\d{2}:\d{2}:\d{2}) From (.*?) to Everyone:\s*(.*)')
     current_timestamp = None
     current_speaker = None
@@ -346,7 +353,7 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
     content_with_duration = preface + content
 
     if model == "o3-mini" or model == "o4-mini":
-        # o3-mini does not temperature settings
+        # o3-mini and o4-mini do not do temperature settings
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -358,7 +365,9 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
         summary: str = response.choices[0].message.content.strip()
         return summary
     else:
-        # Chat-capable models use the chat-completion endpoint with a system prompt and user message.
+        # For other models, set the temperature to 0.2 so that the results don't
+        # meander or make up stuff while still providing some flexibility. I
+        # have not tested whether 0.1 would be better.
         response = client.chat.completions.create(
             model=model,
             temperature=0.2,
@@ -375,7 +384,7 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
 
 # ---------------------- Processing Functions ---------------------- #
 
-def process_meeting_dir(dir_path: str, dir_name: str, transcripts_dir: str, args) -> str:
+def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
     """
     Processes a single meeting directory:
     - Reads captions and chat.
@@ -402,7 +411,7 @@ def process_meeting_dir(dir_path: str, dir_name: str, transcripts_dir: str, args
         pass  # for auto indentation
 
     caption_exists = os.path.isfile(caption_file)
-    chat_exists = chat_file if True else False
+    chat_exists = os.path.isfile(chat_file) if chat_file else False
     if not caption_exists and not chat_exists:
         warn(f"No caption/chat in {dir_name}. Skipping.")
         return None
@@ -415,6 +424,12 @@ def process_meeting_dir(dir_path: str, dir_name: str, transcripts_dir: str, args
     meta_match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}.\d{2}.\d{2}) (.+)$", dir_name)
     if meta_match:
         meeting_datetime, meeting_title = meta_match.groups()
+        meeting_date_str = meta_match.group(1)
+        meeting_year = meeting_date_str.split("-")[0]
+    else:
+        warn(f"Could not parse meeting date from directory '{dir_name}'. Using current year {meeting_year}.")
+        meeting_year = str(date.today().year)  # fallback to current year
+        pass  # for auto indentation
 
     caption_content = ""
     if caption_exists:
@@ -433,7 +448,7 @@ def process_meeting_dir(dir_path: str, dir_name: str, transcripts_dir: str, args
     merged_body = merge_captions_and_chat(caption_content, chat_entries)
 
     if not merged_body.strip():
-        warn("Empty merged transcript for {dir_name}. Skipping.")
+        warn(f"Empty merged transcript for {dir_name}. Skipping.")
         return None
 
     # Prepend meeting metadata
@@ -442,8 +457,13 @@ def process_meeting_dir(dir_path: str, dir_name: str, transcripts_dir: str, args
     transcript_filename = f"{dir_name} meeting_saved_closed_caption.txt"
     if not args.no_clean_names:
         transcript_filename = clean_filename(transcript_filename)
+        pass  # for auto indentation
 
-    transcript_path = os.path.join(transcripts_dir, transcript_filename)
+    merged_dir = os.path.join(args.output_dir, f"Merged-Transcripts-{meeting_year}")
+    if not args.dry_run:
+        os.makedirs(merged_dir, exist_ok=True)
+        pass  # for auto indentation
+    transcript_path = os.path.join(merged_dir, transcript_filename)
 
     if os.path.isfile(transcript_path) and not args.clobber:
         log_and_print("SKIPPING:", "yellow", f"{transcript_filename} exists. Use --clobber to overwrite.")
@@ -477,7 +497,7 @@ def process_meeting_dir(dir_path: str, dir_name: str, transcripts_dir: str, args
                         dir_path, dry_run=args.dry_run)
         pass  # for auto indentation
 
-    return transcript_path
+    return transcript_path, meeting_year
 
 
 def process_and_summarize_all(args, selected_models):
@@ -489,9 +509,9 @@ def process_and_summarize_all(args, selected_models):
         args: Parsed arguments.
         selected_models (list): List of model names.
     """
-    os.makedirs(args.output_dir, exist_ok=True)
-    transcripts_dir = os.path.join(args.output_dir, "Transcripts")
-    os.makedirs(transcripts_dir, exist_ok=True)
+    if not args.dry_run:
+        os.makedirs(args.output_dir, exist_ok=True)
+        pass  # for auto indentation
 
     api_key = read_openai_api_key()
     client = openai.OpenAI(api_key=api_key)
@@ -503,9 +523,11 @@ def process_and_summarize_all(args, selected_models):
         if not os.path.isdir(dir_path):
             continue
 
-        transcript_path = process_meeting_dir(dir_path, dir_name, transcripts_dir, args)
+        transcript_path, meeting_year = process_meeting_dir(dir_path, dir_name, args)
         if transcript_path is None:
             continue
+
+        summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{meeting_year}")
 
         if args.max is not None and processed_count >= args.max:
             info(f"Reached max limit {args.max}. Stopping.")
@@ -519,20 +541,53 @@ def process_and_summarize_all(args, selected_models):
 
         for model in selected_models:
             info(f"Using: {model}")
-            summary = summarize_transcript(content, client, duration, model)
 
-            if "-meeting_saved_closed_caption.txt" in transcript_path:
-                summary_filename = transcript_path.replace("-meeting_saved_closed_caption.txt", f".{model}.summary.txt")
-            elif " meeting_saved_closed_caption.txt" in transcript_path:
-                summary_filename = transcript_path.replace(" meeting_saved_closed_caption.txt", f".{model}.summary.txt")
-            elif "meeting_saved_closed_caption.txt" in transcript_path:
-                summary_filename = transcript_path.replace("meeting_saved_closed_caption.txt", f".{model}.summary.txt")
+            # Extract just the base filename (not the full path).
+            # This ensures our string replacements don't accidentally modify directory names.
+            # Example:
+            #   transcript_path = "/output/Merged-Transcripts-2025/2025-07-31 Meeting meeting_saved_closed_caption.txt"
+            #   base_filename = "2025-07-31 Meeting meeting_saved_closed_caption.txt"
+            base_filename = os.path.basename(transcript_path)
+
+            # We now safely perform replacements on the filename only.
+            # The goal is to produce a summary filename like:
+            #   "2025-07-31 Meeting.o4-mini.summary.txt"
+            #
+            # We explicitly check for different variants of the caption suffix because
+            # filenames might contain either a dash, a space, or no separator before
+            # "meeting_saved_closed_caption.txt".
+            #
+            # Using base_filename avoids a subtle bug where `.replace()` could modify
+            # parts of the directory path if that pattern appeared there by coincidence.
+            if "-meeting_saved_closed_caption.txt" in base_filename:
+                summary_filename = base_filename.replace(
+                    "-meeting_saved_closed_caption.txt", f".{model}.summary.txt"
+                )
+            elif " meeting_saved_closed_caption.txt" in base_filename:
+                summary_filename = base_filename.replace(
+                    " meeting_saved_closed_caption.txt", f".{model}.summary.txt"
+                )
+            elif "meeting_saved_closed_caption.txt" in base_filename:
+                summary_filename = base_filename.replace(
+                    "meeting_saved_closed_caption.txt", f".{model}.summary.txt"
+                )
             else:
-                summary_filename = transcript_path.replace(".txt", f".{model}.summary.txt")
-                pass  # for auto indentation
-            summary_path = os.path.join(args.output_dir, summary_filename)
-            safe_action(f"Saving summary to {summary_path}", action_func=None, dry_run=args.dry_run)
+                # Fallback: if none of the expected patterns are found, replace ".txt"
+                # with ".{model}.summary.txt". This ensures we still generate a summary file.
+                summary_filename = base_filename.replace(
+                    ".txt", f".{model}.summary.txt"
+                )
 
+            # Join the safe filename with the summaries directory for the correct path.
+            summary_path = os.path.join(summaries_base_dir, summary_filename)
+
+            summary = summarize_transcript(content, client, duration, model)
+            if not args.dry_run:
+                os.makedirs(summaries_base_dir, exist_ok=True)
+                pass  # for auto indentation
+            summary_path = os.path.join(summaries_base_dir, os.path.basename(summary_filename))
+
+            safe_action(f"Saving summary to {summary_path}", action_func=None, dry_run=args.dry_run)
             if not args.dry_run:
                 with safe_write(summary_path) as out:
                     out.write(f"Meeting Notes Summary Generated by LLM from {os.path.basename(transcript_path)}\n")
@@ -594,7 +649,10 @@ def setup_logging(output_dir):
     log_path = os.path.join(output_dir, "summarize_meeting_transcripts.log")
     file_handler = logging.FileHandler(log_path)
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s: %(message)s"))
-    logging.getLogger().addHandler(file_handler)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+    # Suppress duplicate INFO messages to console
+    root_logger.handlers[0].setLevel(logging.WARNING)
     info(f"Logging to {log_path}")
     pass  # for auto indentation
 
