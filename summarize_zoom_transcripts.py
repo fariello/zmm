@@ -29,6 +29,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, date
 from termcolor import colored
 import openai
+from typing import Tuple
+
 
 # ---------------------- Constants ---------------------- #
 
@@ -99,6 +101,13 @@ def log_and_print(preface: str, color: str, message: str, level: str = "info"):
     pass  # for auto indentation
 
 
+def debug(msg: str) -> None:
+    global args
+    if not args.debug:
+        return
+    return log_and_print("DEBUG:   ", "cyan", msg, "info")
+
+
 def info(msg: str) -> None:
     return log_and_print("INFO:    ", "green", msg, "info")
 
@@ -159,7 +168,7 @@ def safe_write(path: str) -> IO[str]:
                 break
             counter += 1
 
-    info(f"Writing {path}.")
+    info(f"✏️ ➜📄 Writing {path}.")
     f = open(path, "w", encoding="utf-8")
     try:
         yield f
@@ -206,7 +215,7 @@ def read_openai_api_key() -> str:
     config_path = os.path.expanduser("~/.config/openai.cfg")
     if not os.path.isfile(config_path):
         raise FileNotFoundError(f"OpenAI config file not found at {config_path}")
-    info(f"Reading config file: {config_path}")
+    info(f"🔍 Reading config file: '{config_path}'")
     with open(config_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -272,9 +281,11 @@ def parse_chat_file(chat_file_path: str) -> list[tuple[str, str, str]]:
     current_speaker = None
     current_message = ''
 
-    info(f"Reading chat file: {chat_file_path}")
+    info(f"🔍 Reading chat file: '{chat_file_path}'")
+    line_no = 0
     with open(chat_file_path, 'r', encoding='utf-8') as f:
         for line in f:
+            line_no += 1
             line = line.rstrip()
             match = pattern.match(line)
             if match:
@@ -288,50 +299,131 @@ def parse_chat_file(chat_file_path: str) -> list[tuple[str, str, str]]:
         if current_timestamp:
             chat_entries.append((current_timestamp, current_speaker, current_message.strip()))
 
-    return chat_entries
+    return line_no, chat_entries
 
 
 def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, str, str]]) -> str:
     """
-    Merges captions and chat messages into a chronological transcript.
+    Merge captions and chat chronologically and collapse back-to-back lines
+    from the *same speaker* and *same source* into a single line.
+    The first timestamp in a run is retained.
 
-    Args:
-        caption_content (str): Caption file content.
-        chat_entries (list): Parsed chat entries.
-
-    Returns:
-        str: Merged transcript.
+    Output line format:
+      [Speaker] HH:MM:SS: merged text...
     """
     events = []
-    time_format = "%H:%M:%S"
-
     current_speaker = None
-    current_block = []
-    for line in caption_content.splitlines():
-        match = re.match(r"^\[(.+)\] (\d{2}:\d{2}:\d{2})$", line)
-        if match:
-            if current_block:
-                timestamp, text = current_block[0]
-                events.append((timestamp, f"[{current_speaker}] {timestamp}: {text.strip()}"))
-                current_block = []
-            current_speaker, timestamp = match.groups()
-            current_block.append((timestamp, ""))
+    current_timestamp = None
+    current_text_parts = []
+
+    # Recognize caption speaker/time header lines
+    header_re = re.compile(r"^\[(.+)\] (\d{2}:\d{2}:\d{2})$")
+
+    # 1) Parse caption content
+    for raw_line in caption_content.splitlines():
+        line = raw_line.rstrip()
+        m = header_re.match(line)
+        if m:
+            # flush any accumulated block
+            if current_speaker is not None and current_text_parts:
+                events.append({
+                    "timestamp": current_timestamp,
+                    "speaker": current_speaker,
+                    "text": " ".join(t.strip() for t in current_text_parts if t.strip()),
+                    "source": "caption",
+                })
+            # start new block
+            current_speaker, current_timestamp = m.groups()
+            current_text_parts = []
         else:
-            if current_block:
-                timestamp, text = current_block[-1]
-                current_block[-1] = (timestamp, text + " " + line.strip())
+            if current_speaker is not None:
+                current_text_parts.append(line)
 
-    if current_block:
-        timestamp, text = current_block[0]
-        events.append((timestamp, f"[{current_speaker}] {timestamp}: {text.strip()}"))
+    # flush last block
+    if current_speaker is not None and current_text_parts:
+        events.append({
+            "timestamp": current_timestamp,
+            "speaker": current_speaker,
+            "text": " ".join(t.strip() for t in current_text_parts if t.strip()),
+            "source": "caption",
+        })
 
-    for timestamp, speaker, message in chat_entries:
-        events.append((timestamp, f"[{speaker}] {timestamp}: [IN CHAT]: {message}"))
+    # 2) Add chat entries
+    for ts, speaker, msg in chat_entries:
+        events.append({
+            "timestamp": ts,
+            "speaker": speaker,
+            "text": f"[IN CHAT]: {msg}",
+            "source": "chat",
+        })
 
-    events.sort(key=lambda x: datetime.strptime(x[0], time_format))
-    merged_content = [e[1] for e in events]
+    # 3) Sort all events chronologically
+    def to_dt(ts: str):
+        return datetime.strptime(ts, "%H:%M:%S")
+    events.sort(key=lambda e: to_dt(e["timestamp"]))
 
-    return "\n".join(merged_content) + "\n"
+    # 4) Merge only adjacent events with same speaker *and* same source
+    merged_events = []
+    for e in events:
+        if not merged_events:
+            merged_events.append(e)
+            continue
+
+        last = merged_events[-1]
+        if e["speaker"] == last["speaker"] and e["source"] == last["source"]:
+            # Same speaker AND same source: merge text
+            if e["text"]:
+                last["text"] = (last["text"] + " " + e["text"]).strip()
+        else:
+            # Different speaker OR different source — start a new line
+            merged_events.append(e)
+
+    # 5) Render to string
+    lines = [f'[{e["speaker"]}] {e["timestamp"]}: {e["text"].strip()}' for e in merged_events]
+    return "\n".join(lines) + "\n"
+
+
+# def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, str, str]]) -> str:
+#     """
+#     Merges captions and chat messages into a chronological transcript.
+
+#     Args:
+#         caption_content (str): Caption file content.
+#         chat_entries (list): Parsed chat entries.
+
+#     Returns:
+#         str: Merged transcript.
+#     """
+#     events = []
+#     time_format = "%H:%M:%S"
+
+#     current_speaker = None
+#     current_block = []
+#     for line in caption_content.splitlines():
+#         match = re.match(r"^\[(.+)\] (\d{2}:\d{2}:\d{2})$", line)
+#         if match:
+#             if current_block:
+#                 timestamp, text = current_block[0]
+#                 events.append((timestamp, f"[{current_speaker}] {timestamp}: {text.strip()}"))
+#                 current_block = []
+#             current_speaker, timestamp = match.groups()
+#             current_block.append((timestamp, ""))
+#         else:
+#             if current_block:
+#                 timestamp, text = current_block[-1]
+#                 current_block[-1] = (timestamp, text + " " + line.strip())
+
+#     if current_block:
+#         timestamp, text = current_block[0]
+#         events.append((timestamp, f"[{current_speaker}] {timestamp}: {text.strip()}"))
+
+#     for timestamp, speaker, message in chat_entries:
+#         events.append((timestamp, f"[{speaker}] {timestamp}: [IN CHAT]: {message}"))
+
+#     events.sort(key=lambda x: datetime.strptime(x[0], time_format))
+#     merged_content = [e[1] for e in events]
+
+#     return "\n".join(merged_content) + "\n"
 
 
 # ---------------------- Summarization ---------------------- #
@@ -363,6 +455,7 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
         )
         # Extract and strip text from the first choice.
         summary: str = response.choices[0].message.content.strip()
+        debug(f"Summary 1: {summary}")
         return summary
     else:
         # For other models, set the temperature to 0.2 so that the results don't
@@ -378,13 +471,15 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
         )
         # Extract and strip content from the first choice message.
         summary: str = response.choices[0].message.content.strip()
+        debug(f"Summary 2: {summary}")
         return summary
+    debug(f"Summary 3: {summary}")
     return summary
 
 
 # ---------------------- Processing Functions ---------------------- #
 
-def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
+def process_meeting_dir(dir_path: str, dir_name: str, args) -> Tuple[str, str, str]:
     """
     Processes a single meeting directory:
     - Reads captions and chat.
@@ -399,7 +494,10 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
         args: Parsed arguments.
 
     Returns:
-        str: Path to consolidated transcript file, or None if skipped.
+        Tuple[str, str]: A tuple containing:
+            - The path to the consolidated transcript file, or None if skipped.
+            - The meeting year, or None if skipped.
+            - The contents of the merged file or None
     """
     caption_file = os.path.join(dir_path, "meeting_saved_closed_caption.txt")
     if os.path.isfile(os.path.join(dir_path, "meeting_saved_chat.txt")):
@@ -414,9 +512,9 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
     chat_exists = os.path.isfile(chat_file) if chat_file else False
     if not caption_exists and not chat_exists:
         warn(f"No caption/chat in {dir_name}. Skipping.")
-        return None
+        return None, None, None
 
-    info("================================================================================")
+    info("╞══════════════════════════════════════════════════════════════════════════════╡")
     info(f"Summarizing: {dir_path}")
     # Extract meeting metadata from directory name if possible
     meeting_title = dir_name
@@ -433,26 +531,37 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
 
     caption_content = ""
     if caption_exists:
-        info(f"Reading captions file: {caption_file}")
+        info(f"🔍 Reading captions file: '{caption_file}'")
         with open(caption_file, "r", encoding="utf-8") as f:
             caption_content = f.read()
+            line_no = len(caption_content.splitlines())
+            debug(f"Read {line_no:,d} caption lines")
             pass  # for auto indentation
         pass  # for auto indentation
 
     chat_entries = []
     if chat_exists:
-        chat_entries = parse_chat_file(chat_file)
+        chat_lines, chat_entries = parse_chat_file(chat_file)
+        matching_lines = len(chat_entries)
+        debug(f"Read {chat_lines:,d} lines. Found {matching_lines:,d} matching chat entries.")
+        if matching_lines == 0:
+            warn(f"No matching chat lines found ({chat_lines:,d} lines in file). This is strange.")
+        else:
+            debug(f"Lines: {chat_entries}")
+            pass  # for auto indentation
+    else:
+        debug(f"No chat file found.")
         pass  # for auto indentation
     pass  # for auto indentation
 
-    merged_body = merge_captions_and_chat(caption_content, chat_entries)
+    merged_body = merge_captions_and_chat(caption_content, chat_entries).strip()
 
-    if not merged_body.strip():
+    if not merged_body:
         warn(f"Empty merged transcript for {dir_name}. Skipping.")
-        return None
+        return None, None, merged_body
 
     # Prepend meeting metadata
-    merged = f"Meeting Title: {meeting_title}\nMeeting Start Datetime: {meeting_datetime}\n\n{merged_body}"
+    merged_file_contents = f"Meeting Title: {meeting_title}\nMeeting Start Datetime: {meeting_datetime}\n\n{merged_body}"
 
     transcript_filename = f"{dir_name} meeting_saved_closed_caption.txt"
     if not args.no_clean_names:
@@ -467,7 +576,7 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
 
     if os.path.isfile(transcript_path) and not args.clobber:
         log_and_print("SKIPPING:", "yellow", f"{transcript_filename} exists. Use --clobber to overwrite.")
-        return None
+        return None, None, merged_body
 
     if os.path.isfile(transcript_path) and args.clobber:
         timestamp_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -478,14 +587,22 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
     safe_action(f"Saving consolidated transcript to {transcript_path}",
                 action_func=None, dry_run=args.dry_run)
 
+    debug(f"Writing {len(merged_file_contents.splitlines()):,d} lines to merged transcripts file.")
     if not args.dry_run:
         with safe_write(transcript_path) as out:
-            out.write(merged)
+            out.write(merged_file_contents)
             pass  # for auto indentation
         pass  # for auto indentation
 
     # Cleanup originals and empty directory
-    if not args.no_rm:
+    if args.keep_originals:
+        if caption_exists:
+            info(f"Keeping original caption {caption_file}")
+        if chat_exists:
+            info(f"Keeping original chat {chat_file}")
+            pass  # for auto indentation
+        pass  # for auto indentation
+    else:
         if caption_exists:
             safe_action(f"Deleting original caption {caption_file}", os.remove,
                         caption_file, dry_run=args.dry_run)
@@ -495,9 +612,10 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> str:
         if not os.listdir(dir_path):
             safe_action(f"Deleting empty meeting directory {dir_path}", os.rmdir,
                         dir_path, dry_run=args.dry_run)
+            pass  # for auto indentation
         pass  # for auto indentation
 
-    return transcript_path, meeting_year
+    return transcript_path, meeting_year, merged_file_contents
 
 
 def process_and_summarize_all(args, selected_models):
@@ -523,8 +641,9 @@ def process_and_summarize_all(args, selected_models):
         if not os.path.isdir(dir_path):
             continue
 
-        transcript_path, meeting_year = process_meeting_dir(dir_path, dir_name, args)
+        transcript_path, meeting_year, merged_file_contents = process_meeting_dir(dir_path, dir_name, args)
         if transcript_path is None:
+            warn(f"Skipping: '{os.path.basename(dir_path)}'")
             continue
 
         summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{meeting_year}")
@@ -533,11 +652,7 @@ def process_and_summarize_all(args, selected_models):
             info(f"Reached max limit {args.max}. Stopping.")
             break
 
-        info(f"Reading merged transcripts file: {transcript_path}")
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        duration = compute_duration(content)
+        duration = compute_duration(merged_file_contents)
 
         for model in selected_models:
             info(f"Using: {model}")
@@ -581,7 +696,7 @@ def process_and_summarize_all(args, selected_models):
             # Join the safe filename with the summaries directory for the correct path.
             summary_path = os.path.join(summaries_base_dir, summary_filename)
 
-            summary = summarize_transcript(content, client, duration, model)
+            summary = summarize_transcript(merged_file_contents, client, duration, model)
             if not args.dry_run:
                 os.makedirs(summaries_base_dir, exist_ok=True)
                 pass  # for auto indentation
@@ -593,14 +708,15 @@ def process_and_summarize_all(args, selected_models):
                     out.write(f"Meeting Notes Summary Generated by LLM from {os.path.basename(transcript_path)}\n")
                     out.write("Note: The AI has attempted to correct transcription errors.\n\n")
                     out.write(summary)
-                    out.write(f"\n\nEnd of Meeting Notes from {os.path.basename(transcript_path)}\n")
+                    out.write(f"\n\nEnd of Meeting Notes from {os.path.basename(transcript_path)}\n\n\n")
                     pass  # for auto indentation
                 pass  # for auto indentation
             pass  # for auto indentation
 
-        if not args.keep:
+        if not args.keep_consolidated_transcript:
             safe_action(f"Deleting consolidated transcript {transcript_path}", os.remove,
                         transcript_path, dry_run=args.dry_run)
+            pass  # for auto indentation
         processed_count += 1
         pass  # for auto indentation
     pass  # for auto indentation
@@ -608,20 +724,25 @@ def process_and_summarize_all(args, selected_models):
 
 # ---------------------- Main ---------------------- #
 
+args = None
+
+
 def parse_args():
+    global args
     parser = argparse.ArgumentParser(description="Consolidate and summarize Zoom meeting transcripts.")
-    parser.add_argument("--input-dir", type=str, required=True, help="Directory containing meeting directories.")
-    parser.add_argument("--output-dir", type=str, required=True, help="Directory to save outputs.")
-    parser.add_argument("--max", type=int, default=None, help="Maximum number of meetings to process.")
-    parser.add_argument("--dry-run", action="store_true", help="Show actions without making changes.")
-    parser.add_argument("--keep", action="store_true", help="Keep consolidated transcripts in OUTPUT_DIR/Transcripts.")
-    parser.add_argument("--no-clean-names", action="store_true", help="Do not clean filenames.")
-    parser.add_argument("--no-rm", action="store_true", help="Do not remove original caption/chat files or meeting dirs.")
-    parser.add_argument("--clobber", action="store_true", help="Overwrite existing consolidated transcripts.")
     parser.add_argument("--4o", dest="_4o", action="store_true", help="Run with gpt-4o model")
     parser.add_argument("--4o-mini", dest="_4o_mini", action="store_true", help="Use gpt-4o-mini model (default).")
+    parser.add_argument("--clobber", "-c", action="store_true", help="Overwrite existing files (will still make backups).")
+    parser.add_argument("--debug", "-d", action="store_true", help="Show debugging info.")
+    parser.add_argument("--dry-run", "-D", action="store_true", help="Show actions without making changes.")
+    parser.add_argument("--input-dir", "-i", type=str, required=True, help="Directory containing meeting directories.")
+    parser.add_argument("--keep-consolidated-transcript", "-k", action="store_true", help="Keep consolidated transcripts in OUTPUT_DIR/Transcripts.")
+    parser.add_argument("--keep-originals", "-K", action="store_true", help="Do not remove original caption/chat files or meeting dirs.")
+    parser.add_argument("--max", "-m", type=int, default=None, help="Maximum number of meetings to process.")
+    parser.add_argument("--no-clean-names", "-n", action="store_true", help="Do not clean filenames.")
     parser.add_argument("--o3-mini", dest="o3_mini", action="store_true", help="Use o3-mini model.")
     parser.add_argument("--o4-mini", dest="o4_mini", action="store_true", help="Use o4-mini model.")
+    parser.add_argument("--output-dir", "-o", type=str, required=True, help="Directory to save outputs.")
     args = parser.parse_args()
 
     selected_models = []
