@@ -308,23 +308,36 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
     from the *same speaker* and *same source* into a single line.
     The first timestamp in a run is retained.
 
-    Output line format:
-      [Speaker] HH:MM:SS: merged text...
+    Supports both caption formats:
+      A) Header + following lines:
+         [Speaker] HH:MM:SS
+         text...
+         text...
+      B) Single-line entries:
+         [Speaker] HH:MM:SS: text...
+
+    Chat entries are tagged as source='chat' and *never* merged with captions.
     """
     events = []
+
+    # Regex A: header-only line (start of a multi-line caption block)
+    header_only_re = re.compile(r"^\[(.+?)\]\s+(\d{2}:\d{2}:\d{2})\s*$")
+
+    # Regex B: single-line caption (speaker, timestamp, colon, then inline text)
+    single_line_re = re.compile(r"^\[(.+?)\]\s+(\d{2}:\d{2}:\d{2}):\s*(.*\S)?\s*$")
+
+    # --- Parse captions into events ---
     current_speaker = None
     current_timestamp = None
-    current_text_parts = []
+    current_text_parts = []  # accumulate lines for header-only blocks
 
-    # Recognize caption speaker/time header lines
-    header_re = re.compile(r"^\[(.+)\] (\d{2}:\d{2}:\d{2})$")
-
-    # 1) Parse caption content
     for raw_line in caption_content.splitlines():
         line = raw_line.rstrip()
-        m = header_re.match(line)
-        if m:
-            # flush any accumulated block
+
+        # Try single-line first (more specific)
+        m_single = single_line_re.match(line)
+        if m_single:
+            # If we were accumulating a previous header-only block, flush it first
             if current_speaker is not None and current_text_parts:
                 events.append({
                     "timestamp": current_timestamp,
@@ -332,14 +345,47 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
                     "text": " ".join(t.strip() for t in current_text_parts if t.strip()),
                     "source": "caption",
                 })
-            # start new block
-            current_speaker, current_timestamp = m.groups()
-            current_text_parts = []
-        else:
-            if current_speaker is not None:
-                current_text_parts.append(line)
+                current_speaker = None
+                current_timestamp = None
+                current_text_parts = []
 
-    # flush last block
+            spk, ts, inline_text = m_single.groups()
+            inline_text = (inline_text or "").strip()
+
+            # Emit this single-line caption as its own event;
+            # later we'll merge adjacent caption events from the same speaker.
+            events.append({
+                "timestamp": ts,
+                "speaker": spk,
+                "text": inline_text,
+                "source": "caption",
+            })
+            continue
+
+        # Then try header-only
+        m_hdr = header_only_re.match(line)
+        if m_hdr:
+            # Flush any previous header-only block
+            if current_speaker is not None and current_text_parts:
+                events.append({
+                    "timestamp": current_timestamp,
+                    "speaker": current_speaker,
+                    "text": " ".join(t.strip() for t in current_text_parts if t.strip()),
+                    "source": "caption",
+                })
+
+            current_speaker, current_timestamp = m_hdr.groups()
+            current_text_parts = []
+            continue
+
+        # Otherwise, it's a body line for an active header-only block
+        if current_speaker is not None:
+            if line.strip():  # ignore empty/whitespace-only lines
+                current_text_parts.append(line)
+        # If there's no active block and it's not single-line, we silently ignore
+        # (this covers stray lines before the first header, if any)
+
+    # Flush any trailing header-only block
     if current_speaker is not None and current_text_parts:
         events.append({
             "timestamp": current_timestamp,
@@ -348,7 +394,7 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
             "source": "caption",
         })
 
-    # 2) Add chat entries
+    # --- Add chat entries (kept as separate source so they never merge with captions) ---
     for ts, speaker, msg in chat_entries:
         events.append({
             "timestamp": ts,
@@ -357,12 +403,12 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
             "source": "chat",
         })
 
-    # 3) Sort all events chronologically
+    # --- Sort chronologically ---
     def to_dt(ts: str):
         return datetime.strptime(ts, "%H:%M:%S")
     events.sort(key=lambda e: to_dt(e["timestamp"]))
 
-    # 4) Merge only adjacent events with same speaker *and* same source
+    # --- Merge only adjacent events with same speaker AND same source ---
     merged_events = []
     for e in events:
         if not merged_events:
@@ -371,14 +417,14 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
 
         last = merged_events[-1]
         if e["speaker"] == last["speaker"] and e["source"] == last["source"]:
-            # Same speaker AND same source: merge text
+            # Same speaker & same source -> merge text, keep the first timestamp
             if e["text"]:
+                # Add a space between pieces to avoid collisions
                 last["text"] = (last["text"] + " " + e["text"]).strip()
         else:
-            # Different speaker OR different source — start a new line
             merged_events.append(e)
 
-    # 5) Render to string
+    # --- Render ---
     lines = [f'[{e["speaker"]}] {e["timestamp"]}: {e["text"].strip()}' for e in merged_events]
     return "\n".join(lines) + "\n"
 
