@@ -1006,8 +1006,117 @@ def process_specific_files(args, selected_models):
     pass  # for auto indentation
 
 
+def report_status(args):
+    """
+    --status mode: scan input and output directories and report the processing
+    state of every meeting directory without making any API calls.
 
-args = None
+    For each meeting directory found in --input-dir the report shows:
+      - Whether raw caption / chat files are present
+      - Whether a merged transcript has been generated in the output dir
+      - Which summary files (by model) exist in the output dir
+
+    Args:
+        args: Parsed arguments. Requires args.input_dir and args.output_dir.
+    """
+    SEP = "─" * 78
+
+    def check(val):
+        return colored("✓", "green", attrs=["bold"]) if val else colored("✗", "red")
+
+    print()
+    print(colored("Meeting Status Report", "cyan", attrs=["bold"]))
+    print(SEP)
+    print(f"Input dir:  {args.input_dir}")
+    print(f"Output dir: {args.output_dir}")
+    print()
+
+    dir_names = sorted(
+        d for d in os.listdir(args.input_dir)
+        if os.path.isdir(os.path.join(args.input_dir, d))
+    )
+
+    if not dir_names:
+        print("No meeting directories found.")
+        return
+
+    counts = {"total": 0, "raw": 0, "merged": 0, "summarized": 0, "fully_done": 0}
+
+    for dir_name in dir_names:
+        counts["total"] += 1
+        dir_path = os.path.join(args.input_dir, dir_name)
+
+        # --- Raw files ---
+        caption_file = os.path.join(dir_path, "meeting_saved_closed_caption.txt")
+        caption_exists = os.path.isfile(caption_file)
+
+        chat_file_path = None
+        for chat_name in ("meeting_saved_chat.txt", "meeting_saved_new_chat.txt"):
+            candidate = os.path.join(dir_path, chat_name)
+            if os.path.isfile(candidate):
+                chat_file_path = candidate
+                break
+        chat_exists = chat_file_path is not None
+
+        if caption_exists or chat_exists:
+            counts["raw"] += 1
+
+        # --- Merged transcript ---
+        meta_match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}) (.+)$", dir_name)
+        meeting_year = meta_match.group(1).split("-")[0] if meta_match else str(date.today().year)
+
+        transcript_filename = f"{dir_name} meeting_saved_closed_caption.txt"
+        if not args.no_clean_names:
+            transcript_filename = clean_filename(transcript_filename)
+
+        merged_dir = os.path.join(args.output_dir, f"Merged-Transcripts-{meeting_year}")
+        transcript_path = os.path.join(merged_dir, transcript_filename)
+        merged_exists = os.path.isfile(transcript_path)
+        if merged_exists:
+            counts["merged"] += 1
+
+        # --- Summary files ---
+        summaries_dir = os.path.join(args.output_dir, f"Summaries-{meeting_year}")
+        summary_files = []
+        if os.path.isdir(summaries_dir):
+            stem = os.path.splitext(transcript_filename)[0]
+            summary_files = sorted(
+                f for f in os.listdir(summaries_dir)
+                if f.startswith(stem) and f.endswith(".summary.txt")
+            )
+        if summary_files:
+            counts["summarized"] += 1
+        if merged_exists and summary_files:
+            counts["fully_done"] += 1
+
+        # --- Print row ---
+        print(f"  {colored(dir_name, 'white', attrs=['bold'])}")
+        print(f"    Caption:   {check(caption_exists)}")
+        print(f"    Chat:      {check(chat_exists)}")
+        print(f"    Merged:    {check(merged_exists)}", end="")
+        if merged_exists:
+            print(f"  ({transcript_filename})")
+        else:
+            print()
+        if summary_files:
+            # Extract model name: strip stem + leading dot, then .summary.txt
+            for sf in summary_files:
+                model_name = sf[len(stem):].lstrip(".").replace(".summary.txt", "")
+                print(f"    Summary:   {check(True)}  {model_name}  ({sf})")
+        else:
+            print(f"    Summary:   {check(False)}  (none)")
+        print()
+
+    # --- Totals ---
+    print(SEP)
+    not_started = counts["total"] - counts["raw"] - (counts["merged"] - counts["raw"] if counts["merged"] > counts["raw"] else 0)
+    print(f"Total meetings:     {counts['total']:>4}")
+    print(f"  Have raw files:   {counts['raw']:>4}  (caption or chat present in input dir)")
+    print(f"  Have merged:      {counts['merged']:>4}  (consolidated transcript generated)")
+    print(f"  Have summaries:   {counts['summarized']:>4}  (at least one summary file found)")
+    print()
+
+
 
 
 def parse_args():
@@ -1085,6 +1194,10 @@ def parse_args():
                              "directory (e.g. 'default', 'v1', 'interview') or an absolute/relative "
                              "path to a .txt file. Use --list-prompts to see available names. "
                              "Default: 'default'.")
+    parser.add_argument("--status", action="store_true",
+                        help="Report the processing status of every meeting in --input-dir: "
+                             "which meetings have raw caption/chat files, merged transcripts, "
+                             "and summary files. No API calls are made.")
     parser.add_argument("--year", "-y", type=str, default=None, metavar="YYYY",
                         help="In --from-merged mode: limit processing to Merged-Transcripts-YYYY for this year.")
     args = parser.parse_args()
@@ -1100,8 +1213,8 @@ def parse_args():
             print(f"No prompts found in {PROMPTS_DIR}/")
         raise SystemExit(0)
 
-    # Validate: --input-dir is required unless --files is given.
-    if not args.files and args.input_dir is None:
+    # Validate: --input-dir is required unless --files or --list-prompts is given.
+    if not args.files and not args.status and args.input_dir is None:
         parser.error("--input-dir is required unless --files is specified.")
 
     selected_models = []
@@ -1143,6 +1256,9 @@ def main():
     and dispatches to the appropriate processing mode.
     """
     args, selected_models = parse_args()
+    if args.status:
+        report_status(args)
+        return
     setup_logging(args.output_dir)
     if args.files:
         process_specific_files(args, selected_models)
