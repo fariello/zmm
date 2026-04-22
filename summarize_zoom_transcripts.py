@@ -945,6 +945,30 @@ def process_and_summarize_all(args, selected_models):
     pass  # for auto indentation
 
 
+def year_from_path(path: str) -> str:
+    """
+    Derive a 4-digit year string from a merged transcript path.
+
+    Checks the parent directory name first (Merged-Transcripts-YYYY),
+    then falls back to a leading YYYY- prefix in the filename itself.
+    Returns the current year as a last resort.
+
+    Args:
+        path: Absolute or relative path to a merged transcript file.
+
+    Returns:
+        Four-character year string.
+    """
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    m = re.match(r"Merged-Transcripts-(\d{4})$", parent)
+    if m:
+        return m.group(1)
+    m = re.match(r"(\d{4})-", os.path.basename(path))
+    if m:
+        return m.group(1)
+    return str(date.today().year)
+
+
 def process_and_summarize_from_merged(args, selected_models):
     """
     Re-run mode (--from-merged): summarize already-merged transcript files.
@@ -990,7 +1014,9 @@ def process_and_summarize_from_merged(args, selected_models):
 
         transcript_files = sorted(
             p for p in os.listdir(merged_dir)
-            if p.endswith(".txt") and not p.endswith(".summary.txt")
+            if p.endswith(".txt")
+            and not p.endswith(".summary.txt")
+            and (not args.match or args.match.lower() in p.lower())
         )
 
         if not transcript_files:
@@ -1024,10 +1050,62 @@ def process_and_summarize_from_merged(args, selected_models):
             pass  # for auto indentation
         pass  # for auto indentation
     pass  # for auto indentation
+def process_specific_files(args, selected_models):
+    """
+    --files mode: summarize one or more specific merged transcript files.
+
+    Each file path is taken directly from args.files. The year for the
+    output Summaries-YYYY/ directory is derived from the file's parent
+    directory name (Merged-Transcripts-YYYY) or from a YYYY- prefix in
+    the filename itself.
+
+    Merged transcript files are never deleted in this mode.
+
+    Args:
+        args: Parsed arguments (args.files must be non-empty).
+        selected_models (list): List of model names.
+    """
+    api_key = read_openai_api_key()
+    client = openai.OpenAI(api_key=api_key)
+
+    processed_count = 0
+    for transcript_path in args.files:
+        if args.max is not None and processed_count >= args.max:
+            info(f"Reached max limit {args.max}. Stopping.")
+            break
+
+        if not os.path.isfile(transcript_path):
+            warn(f"File not found: '{transcript_path}'. Skipping.")
+            continue
+        if not transcript_path.endswith(".txt"):
+            warn(f"Unexpected extension (expected .txt): '{transcript_path}'. Skipping.")
+            continue
+
+        year = year_from_path(transcript_path)
+        summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{year}")
+
+        info("╞══════════════════════════════════════════════════════════════════════════════╡")
+        info(f"Re-summarizing: {transcript_path}")
+
+        try:
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                merged_file_contents = f.read()
+        except OSError as exc:
+            warn(f"Could not read '{transcript_path}': {exc}. Skipping.")
+            continue
+
+        if not merged_file_contents.strip():
+            warn(f"Empty transcript file: {transcript_path}. Skipping.")
+            continue
+
+        summarize_one_transcript(
+            transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args
+        )
+        processed_count += 1
+        pass  # for auto indentation
+    pass  # for auto indentation
 
 
-
-# ---------------------- Main ---------------------- #
 
 args = None
 
@@ -1042,11 +1120,17 @@ def parse_args():
             "  # Default: merge raw meeting dirs and summarize\n"
             "  %(prog)s --input-dir /zoom/meetings --output-dir /zoom/output --o4-mini\n"
             "\n"
-            "  # Re-summarize previously merged transcripts with a new model\n"
+            "  # Re-summarize all previously merged transcripts with a new model\n"
             "  %(prog)s --from-merged --input-dir /zoom/output --output-dir /zoom/output --4o\n"
             "\n"
             "  # Re-summarize only 2025 transcripts\n"
             "  %(prog)s --from-merged --year 2025 --input-dir /zoom/output --output-dir /zoom/output --o4-mini\n"
+            "\n"
+            "  # Re-summarize transcripts matching a name fragment\n"
+            "  %(prog)s --from-merged --match 'PMO Team' --input-dir /zoom/output --output-dir /zoom/output --4o\n"
+            "\n"
+            "  # Re-summarize one or a few specific files\n"
+            "  %(prog)s --files /zoom/output/Merged-Transcripts-2026/2026-04-21-PMO-Team.txt --output-dir /zoom/output --4o\n"
         ),
     )
     parser.add_argument("--4o", dest="_4o", action="store_true", help="Run with gpt-4o model.")
@@ -1054,24 +1138,33 @@ def parse_args():
     parser.add_argument("--clobber", "-c", action="store_true", help="Overwrite existing summary files (will still make backups).")
     parser.add_argument("--debug", "-d", action="store_true", help="Show debugging info.")
     parser.add_argument("--dry-run", "-D", action="store_true", help="Show actions without making changes.")
+    parser.add_argument("--files", nargs="+", metavar="FILE", default=None,
+                        help="Re-summarize specific merged transcript file(s). "
+                             "Provide one or more paths. --input-dir is not required in this mode; "
+                             "the output year is derived from each file's parent directory name "
+                             "(Merged-Transcripts-YYYY) or its YYYY- filename prefix.")
     parser.add_argument("--force", "-f", action="store_true",
                         help="Allow deletion of chat files that produced zero parsed entries. "
                              "Without this flag, such files are kept to prevent accidental data loss.")
     parser.add_argument("--from-merged", action="store_true",
                         help="Re-run mode: read already-merged transcripts from "
                              "INPUT_DIR/Merged-Transcripts-YYYY/ and re-summarize them. "
-                             "Useful for applying a new model or updated prompt to existing transcripts. "
                              "Merged transcript files are never deleted in this mode. "
-                             "Use --year to limit to a single year.")
-    parser.add_argument("--input-dir", "-i", type=str, required=True,
-                        help="In default mode: directory containing raw meeting directories. "
+                             "Use --year to limit to a single year; --match to filter by name.")
+    parser.add_argument("--input-dir", "-i", type=str, default=None,
+                        help="In default mode: directory containing raw meeting directories (required). "
                              "In --from-merged mode: directory containing Merged-Transcripts-YYYY/ subdirs "
-                             "(typically the same as --output-dir from a prior run).")
+                             "(typically the same as --output-dir from a prior run). "
+                             "Not required when --files is used.")
     parser.add_argument("--keep-consolidated-transcript", "-k", action="store_true",
                         help="Keep consolidated transcripts in OUTPUT_DIR/Merged-Transcripts-YYYY/. "
-                             "Ignored in --from-merged mode (merged files are always kept).")
+                             "Ignored in --from-merged and --files modes (merged files are always kept).")
     parser.add_argument("--keep-originals", "-K", action="store_true",
                         help="Do not remove original caption/chat files or meeting dirs.")
+    parser.add_argument("--match", type=str, default=None, metavar="PATTERN",
+                        help="In --from-merged mode: only process transcript files whose filename "
+                             "contains PATTERN (case-insensitive substring match). "
+                             "Example: --match 'PMO Team'")
     parser.add_argument("--max", "-m", type=int, default=None,
                         help="Maximum number of transcript files to process.")
     parser.add_argument("--no-clean-names", "-n", action="store_true", help="Do not clean filenames.")
@@ -1082,6 +1175,10 @@ def parse_args():
     parser.add_argument("--year", "-y", type=str, default=None, metavar="YYYY",
                         help="In --from-merged mode: limit processing to Merged-Transcripts-YYYY for this year.")
     args = parser.parse_args()
+
+    # Validate: --input-dir is required unless --files is given.
+    if not args.files and args.input_dir is None:
+        parser.error("--input-dir is required unless --files is specified.")
 
     selected_models = []
     if args._4o:
@@ -1123,7 +1220,9 @@ def main():
     """
     args, selected_models = parse_args()
     setup_logging(args.output_dir)
-    if args.from_merged:
+    if args.files:
+        process_specific_files(args, selected_models)
+    elif args.from_merged:
         process_and_summarize_from_merged(args, selected_models)
     else:
         process_and_summarize_all(args, selected_models)
