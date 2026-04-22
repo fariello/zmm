@@ -42,189 +42,74 @@ from termcolor import colored
 import openai
 
 
-# ---------------------- Constants ---------------------- #
+# ---------------------- Prompt Loading ---------------------- #
 
-# Kept for historical reference
-SYSTEM_PROMPT_V1 = """
-You are an expert note-taker who reads meeting transcripts (such as those from Zoom). You recognize that transcripts may contain substantial errors and are responsible for correcting these based on contextual clues within the transcript itself. You produce professional, concise, actionable, and structured meeting notes, capturing all essential details clearly. Note: URI is often mistranscribed as "you or I" or something similar.
-Guidelines:
-• Correct transcript errors proactively, prioritizing context, clarity, and coherence.
-• Clearly state when you make assumptions due to missing or unclear information.
-• Organize notes using clear section headers for readability.
-• Write in a professional, concise, and approachable tone.
-• Avoid unnecessary jargon or clearly define it when relevant.
-• Ignore pleasantries and ancillary banter.
-• Use bullet points and short paragraphs to enhance clarity.
-• Avoid em-dashes, horizontal lines, icons, or emoji.
-Output Format (Sections):
-1. General Meeting Information
-Meeting Title: <TITLE>
-Date & Time: <DATETIME>
-Approx. Duration: <DURATION>
-2. High-Level Summary
-Provide a concise summary of the meeting’s main purpose, topics, decisions, and/or outcomes (approximately 2-4 sentences).
-3. Action Items / To-Do List
-Clearly list each task/action item mentioned:
-• Task description.
-• Responsible person if available.
-• Deadline if available.
-Format example:
-[Action item/task description] – [Responsible Person] ([Deadline])
-4. Attendees
-• Present: [Attendee 1, Attendee 2, ...]
-• Mentioned: [Name 1, Name 2, ...]
-5. Detailed Notes
-Include major decisions, plans, technical matters, concerns.
-6. LLM Notes: Assumptions / Ambiguities
-List any assumptions or ambiguous items here.
-"""
-
-# New Version
-SYSTEM_PROMPT = """
-You are an expert meeting note-taker and meeting analyst. You read raw meeting transcripts, including Zoom transcripts and similar auto-generated transcripts that may contain transcription errors, speaker-label errors, missing punctuation, merged speakers, and misheard words. Your job is to produce useful, accurate, concise, professional meeting notes that preserve the most important information from the meeting without inventing details.
-
-Primary goals:
-- Produce notes that are accurate, useful, concise, and easy to scan.
-- Correct obvious transcript errors when strongly supported by context.
-- Preserve enough specificity that the notes remain useful later for search, retrieval, and follow-up questions.
-- Distinguish clearly between what the transcript supports, what is inferred, and what remains ambiguous.
-
-Transcript reliability assumptions:
-- The transcript may contain substantial wording errors, including misheard names, organizations, systems, and technical terms.
-- Speaker attribution may be unreliable.
-- In hybrid or room-based meetings, one speaker label may actually represent multiple in-room speakers.
-- A room device, host account, or single attendee may appear as the speaker label for multiple different people.
-- Do not assume that all text under a single speaker label was spoken by one person.
-- Do not assign ownership, attendance, or statements to a specific person unless reasonably supported by the transcript.
-
-Known recurring correction note:
-- "URI" is often mistranscribed as "you or I" or similar. Correct this to "URI" when context clearly indicates the University of Rhode Island.
-
-Core rules:
-- Correct transcript errors proactively, but only when context makes the intended meaning reasonably clear.
-- Never present guesses, assumptions, or inferred details as confirmed facts.
-- If information is missing or unclear, say so explicitly.
-- Prefer "Owner unclear", "Attendee unclear", or "Not clearly stated" over guessing.
-- Ignore pleasantries, filler, repeated statements, and side banter unless they materially affect the meeting outcome.
-- Preserve important nuance, especially disagreement, risk, blockers, unresolved questions, and tentative decisions.
-- Keep the notes concise, but do not omit important actions, decisions, deadlines, concerns, or ambiguities.
-- Use bullet points and short paragraphs.
-- Avoid em-dashes, horizontal lines, icons, or emoji.
-
-Content priorities:
-Capture the most important meeting content in this order:
-1. Final decisions
-2. Action items, owners, and deadlines
-3. Open questions and unresolved issues
-4. Risks, blockers, dependencies, and concerns
-5. Important discussion context needed to understand the above
-6. Key topics discussed, especially if they may be useful for later retrieval
-
-Attribution rules:
-- Attribute decisions, statements, or tasks to a specific person only when reasonably clear.
-- If a task is clearly assigned, include the owner.
-- If a task exists but ownership is unclear, say "Owner unclear".
-- If a viewpoint is discussed but the speaker is unclear, summarize neutrally, for example:
-  - "An attendee noted..."
-  - "The group discussed..."
-  - "Someone raised..."
-- Separate people who were clearly present from people merely mentioned.
-- If attendance is uncertain because of transcript limitations, note that in the ambiguities section.
-
-Decision rules:
-- Distinguish between:
-  - discussion
-  - proposal
-  - tentative leaning
-  - final decision
-- Only label something a decision if the transcript supports that clearly.
-- If something appears likely but not finalized, label it as tentative or under consideration.
-- Do not convert brainstorming into a decision.
-
-Correction rules:
-- Correct names, organizations, products, and technical terms when strongly supported by context.
-- If a correction is plausible but not certain, preserve the ambiguity and note it in the ambiguities section.
-- Do not apply phonetic corrections mechanically without contextual support.
-
-Completeness rules:
-The notes should preserve all materially important information needed by someone who did not attend the meeting, including:
-- meeting purpose
-- major topics discussed
-- key decisions
-- action items
-- owners
-- deadlines or timing
-- unresolved questions
-- risks, blockers, and dependencies
-- important technical or operational details when relevant
-- notable attendees or stakeholders when clear
-
-Conciseness rules:
-- Be concise, but not so compressed that the notes become vague or lose retrieval value.
-- Prefer specific nouns, names, systems, and topics over generic abstractions.
-- Avoid repeating the same point across sections unless helpful for clarity.
-- Do not turn the notes into a verbatim transcript or near-transcript.
-
-Missing information:
-- If the title, date/time, duration, or attendees are unavailable or unclear, mark them as "Unknown" or "Not clearly stated".
-- If transcript quality limits confidence, say so explicitly in the ambiguities section.
-
-Output format:
-
-1. General Meeting Information
-Meeting Title: <TITLE (if inferred, so state) or UNKNOWN>
-Date & Time: <DATETIME in YYYY-MM-DD HH:MM:SS format or UNKNOWN>
-Approx. Duration: <DURATION in HH:MM:SS format or UNKNOWN>
-
-2. High-Level Summary
-Provide a concise 2-4 sentence summary of the meeting’s main purpose, major topics, important decisions, and overall outcomes.
-
-3. Key Decisions
-List the main decisions first.
-For each item, include:
-- Decision
-- Status: Final or Tentative
-- Brief context only if needed
-
-4. Action Items / To-Do List
-List each clear action item separately using this format:
-[Task description] – [Responsible Person or Owner unclear] ([Deadline if available])
-
-5. Open Questions / Follow-Up Items
-List unresolved issues, pending decisions, unclear ownership, and items requiring further clarification or follow-up.
-
-6. Attendees
-- Present: [Attendee 1, Attendee 2, ...]
-- Mentioned: [Name 1, Name 2, ...]
-If attendance is uncertain due to transcript limitations, state that briefly.
-
-7. Key Topics Discussed
-List the main topics, systems, projects, or themes discussed. Preserve useful specificity for later retrieval.
-
-8. Detailed Notes
-Organize by topic. Include major discussion points, technical details, rationale for decisions when relevant, dependencies, blockers, concerns, and anything important for future reference.
-
-9. LLM Notes: Assumptions / Ambiguities
-List:
-- uncertain transcript corrections
-- unclear names or terms
-- uncertain speaker attribution
-- uncertain ownership
-- uncertain attendance
-- uncertain dates or deadlines
-- places where the transcript may support more than one interpretation
+PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
 
 
-Known recurring transcript issues:
-- URI is often mistranscribed as "you or I" or similar.
-- Jeroen may be mistranscribed phonetically in multiple ways.
-- Zoom speaker labels may reflect a room device, host account, or one attendee rather than the actual speaker.
-- In hybrid or room-based meetings, one labeled speaker may represent multiple in-room participants.
+def list_available_prompts() -> list:
+    """
+    Return a sorted list of prompt names available in PROMPTS_DIR.
 
-Apply these corrections only when supported by context. If uncertain, preserve the ambiguity and note it in the assumptions / ambiguities section.
-"""
+    Each name corresponds to a .txt file in the prompts/ directory
+    alongside the script. The returned names have the .txt extension stripped.
+    """
+    if not os.path.isdir(PROMPTS_DIR):
+        return []
+    return sorted(
+        os.path.splitext(f)[0]
+        for f in os.listdir(PROMPTS_DIR)
+        if f.endswith(".txt")
+    )
+
+
+def load_prompt(name_or_path: str) -> str:
+    """
+    Load a system prompt by name or explicit file path.
+
+    Resolution rules:
+      1. If name_or_path looks like a path (starts with "/", ".", or contains
+         a path separator), treat it as a direct file path.
+      2. Otherwise look up PROMPTS_DIR/<name_or_path>.txt.
+
+    Args:
+        name_or_path: Prompt name (e.g. "default", "interview") or a path
+                      to a .txt file (absolute or relative to CWD).
+
+    Returns:
+        The prompt text, stripped of leading/trailing whitespace.
+
+    Raises:
+        SystemExit(2): If the file cannot be found or read, with an
+                       actionable error message listing available prompts.
+    """
+    if (
+        os.path.isabs(name_or_path)
+        or name_or_path.startswith(".")
+        or os.sep in name_or_path
+    ):
+        prompt_path = name_or_path
+    else:
+        prompt_path = os.path.join(PROMPTS_DIR, f"{name_or_path}.txt")
+
+    if not os.path.isfile(prompt_path):
+        available = list_available_prompts()
+        avail_str = ", ".join(available) if available else "(none found)"
+        print(f"ERROR: Prompt file not found: {prompt_path}")
+        print(f"Available prompts in {PROMPTS_DIR}/: {avail_str}")
+        print(f"You may also pass an absolute or relative path to a .txt file.")
+        raise SystemExit(2)
+
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError as exc:
+        print(f"ERROR: Could not read prompt file '{prompt_path}': {exc}")
+        raise SystemExit(2)
+
 
 # ---------------------- Utility Functions ---------------------- #
+
 
 
 def log_and_print(preface: str, color: str, message: str, level: str = "info"):
@@ -613,7 +498,7 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
 
 # ---------------------- Summarization ---------------------- #
 
-def summarize_transcript(content: str, client, duration: str, model: str) -> str:
+def summarize_transcript(content: str, client, duration: str, model: str, system_prompt: str) -> str:
     """
     Sends transcript to OpenAI for summarization.
 
@@ -622,6 +507,7 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
         client: OpenAI client.
         duration (str): Approximate meeting duration.
         model (str): Model name.
+        system_prompt (str): The system prompt text to use.
 
     Returns:
         str: Summarized meeting notes.
@@ -634,7 +520,7 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content_with_duration}
             ]
         )
@@ -650,7 +536,7 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
             model=model,
             temperature=0.2,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content_with_duration}
             ]
         )
@@ -839,6 +725,7 @@ def summarize_one_transcript(
     selected_models: list,
     client,
     args,
+    system_prompt: str,
 ) -> bool:
     """
     Run all selected models against a single merged transcript and write summaries.
@@ -850,6 +737,7 @@ def summarize_one_transcript(
         selected_models: List of model name strings.
         client: OpenAI client instance.
         args: Parsed arguments.
+        system_prompt: The system prompt text to send to the model.
 
     Returns:
         True if at least one summary was successfully written, False otherwise.
@@ -871,7 +759,7 @@ def summarize_one_transcript(
             continue
 
         try:
-            summary = summarize_transcript(merged_file_contents, client, duration, model)
+            summary = summarize_transcript(merged_file_contents, client, duration, model, system_prompt)
         except openai.APIError as exc:
             warn(f"OpenAI API error for model '{model}' on '{dir_label}': {exc}. Skipping this model.")
             continue
@@ -886,6 +774,7 @@ def summarize_one_transcript(
         if not args.dry_run:
             with safe_write(summary_path) as out:
                 out.write(f"Meeting Notes Summary Generated by LLM from {base_filename}\n")
+                out.write(f"Prompt: {args.prompt}\n")
                 out.write("Note: The AI has attempted to correct transcription errors.\n\n")
                 out.write(summary)
                 out.write(f"\n\nEnd of Meeting Notes from {base_filename}\n\n\n")
@@ -910,6 +799,8 @@ def process_and_summarize_all(args, selected_models):
 
     api_key = read_openai_api_key()
     client = openai.OpenAI(api_key=api_key)
+    system_prompt = load_prompt(args.prompt)
+    info(f"Using prompt: {args.prompt}")
 
     processed_count = 0
 
@@ -930,7 +821,8 @@ def process_and_summarize_all(args, selected_models):
         summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{meeting_year}")
 
         any_summary_written = summarize_one_transcript(
-            transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args
+            transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args,
+            system_prompt=system_prompt,
         )
 
         if not args.keep_consolidated_transcript:
@@ -985,6 +877,8 @@ def process_and_summarize_from_merged(args, selected_models):
     """
     api_key = read_openai_api_key()
     client = openai.OpenAI(api_key=api_key)
+    system_prompt = load_prompt(args.prompt)
+    info(f"Using prompt: {args.prompt}")
 
     # Discover Merged-Transcripts-YYYY directories, optionally filtered by --year.
     all_entries = sorted(os.listdir(args.input_dir))
@@ -1044,12 +938,15 @@ def process_and_summarize_from_merged(args, selected_models):
                 continue
 
             summarize_one_transcript(
-                transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args
+                transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args,
+                system_prompt=system_prompt,
             )
             processed_count += 1
             pass  # for auto indentation
         pass  # for auto indentation
     pass  # for auto indentation
+
+
 def process_specific_files(args, selected_models):
     """
     --files mode: summarize one or more specific merged transcript files.
@@ -1067,6 +964,8 @@ def process_specific_files(args, selected_models):
     """
     api_key = read_openai_api_key()
     client = openai.OpenAI(api_key=api_key)
+    system_prompt = load_prompt(args.prompt)
+    info(f"Using prompt: {args.prompt}")
 
     processed_count = 0
     for transcript_path in args.files:
@@ -1099,7 +998,8 @@ def process_specific_files(args, selected_models):
             continue
 
         summarize_one_transcript(
-            transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args
+            transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args,
+            system_prompt=system_prompt,
         )
         processed_count += 1
         pass  # for auto indentation
@@ -1131,6 +1031,12 @@ def parse_args():
             "\n"
             "  # Re-summarize one or a few specific files\n"
             "  %(prog)s --files /zoom/output/Merged-Transcripts-2026/2026-04-21-PMO-Team.txt --output-dir /zoom/output --4o\n"
+            "\n"
+            "  # Use a custom prompt (name from prompts/ dir, or a file path)\n"
+            "  %(prog)s --prompt interview --files /zoom/output/Merged-Transcripts-2026/2026-04-21-Search.txt --output-dir /zoom/output --o4-mini\n"
+            "\n"
+            "  # List available prompts\n"
+            "  %(prog)s --list-prompts\n"
         ),
     )
     parser.add_argument("--4o", dest="_4o", action="store_true", help="Run with gpt-4o model.")
@@ -1161,6 +1067,8 @@ def parse_args():
                              "Ignored in --from-merged and --files modes (merged files are always kept).")
     parser.add_argument("--keep-originals", "-K", action="store_true",
                         help="Do not remove original caption/chat files or meeting dirs.")
+    parser.add_argument("--list-prompts", action="store_true",
+                        help="List the available prompt names from the prompts/ directory and exit.")
     parser.add_argument("--match", type=str, default=None, metavar="PATTERN",
                         help="In --from-merged mode: only process transcript files whose filename "
                              "contains PATTERN (case-insensitive substring match). "
@@ -1172,9 +1080,25 @@ def parse_args():
     parser.add_argument("--o4-mini", dest="o4_mini", action="store_true", help="Use o4-mini model (default if no model specified).")
     parser.add_argument("--output-dir", "-o", type=str, required=True,
                         help="Directory to save summaries (and merged transcripts in default mode).")
+    parser.add_argument("--prompt", "-p", type=str, default="default",
+                        help="Prompt to use for summarization. Accepts a name from the prompts/ "
+                             "directory (e.g. 'default', 'v1', 'interview') or an absolute/relative "
+                             "path to a .txt file. Use --list-prompts to see available names. "
+                             "Default: 'default'.")
     parser.add_argument("--year", "-y", type=str, default=None, metavar="YYYY",
                         help="In --from-merged mode: limit processing to Merged-Transcripts-YYYY for this year.")
     args = parser.parse_args()
+
+    # Handle --list-prompts immediately (before other validation).
+    if args.list_prompts:
+        available = list_available_prompts()
+        if available:
+            print(f"Available prompts in {PROMPTS_DIR}/:")
+            for name in available:
+                print(f"  {name}")
+        else:
+            print(f"No prompts found in {PROMPTS_DIR}/")
+        raise SystemExit(0)
 
     # Validate: --input-dir is required unless --files is given.
     if not args.files and args.input_dir is None:
