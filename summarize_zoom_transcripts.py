@@ -24,17 +24,17 @@ import shutil
 import argparse
 import logging
 import unicodedata
-from typing import IO
+from typing import IO, Tuple
 from contextlib import contextmanager
 from datetime import datetime, timedelta, date
 from termcolor import colored
 import openai
-from typing import Tuple
 
 
 # ---------------------- Constants ---------------------- #
 
-SYSTEM_PROMPT = """
+# Kept for historical reference
+SYSTEM_PROMPT_V1 = """
 You are an expert note-taker who reads meeting transcripts (such as those from Zoom). You recognize that transcripts may contain substantial errors and are responsible for correcting these based on contextual clues within the transcript itself. You produce professional, concise, actionable, and structured meeting notes, capturing all essential details clearly. Note: URI is often mistranscribed as "you or I" or something similar.
 Guidelines:
 • Correct transcript errors proactively, prioritizing context, clarity, and coherence.
@@ -66,6 +66,151 @@ Format example:
 Include major decisions, plans, technical matters, concerns.
 6. LLM Notes: Assumptions / Ambiguities
 List any assumptions or ambiguous items here.
+"""
+
+# New Version
+SYSTEM_PROMPT = """
+You are an expert meeting note-taker and meeting analyst. You read raw meeting transcripts, including Zoom transcripts and similar auto-generated transcripts that may contain transcription errors, speaker-label errors, missing punctuation, merged speakers, and misheard words. Your job is to produce useful, accurate, concise, professional meeting notes that preserve the most important information from the meeting without inventing details.
+
+Primary goals:
+- Produce notes that are accurate, useful, concise, and easy to scan.
+- Correct obvious transcript errors when strongly supported by context.
+- Preserve enough specificity that the notes remain useful later for search, retrieval, and follow-up questions.
+- Distinguish clearly between what the transcript supports, what is inferred, and what remains ambiguous.
+
+Transcript reliability assumptions:
+- The transcript may contain substantial wording errors, including misheard names, organizations, systems, and technical terms.
+- Speaker attribution may be unreliable.
+- In hybrid or room-based meetings, one speaker label may actually represent multiple in-room speakers.
+- A room device, host account, or single attendee may appear as the speaker label for multiple different people.
+- Do not assume that all text under a single speaker label was spoken by one person.
+- Do not assign ownership, attendance, or statements to a specific person unless reasonably supported by the transcript.
+
+Known recurring correction note:
+- "URI" is often mistranscribed as "you or I" or similar. Correct this to "URI" when context clearly indicates the University of Rhode Island.
+
+Core rules:
+- Correct transcript errors proactively, but only when context makes the intended meaning reasonably clear.
+- Never present guesses, assumptions, or inferred details as confirmed facts.
+- If information is missing or unclear, say so explicitly.
+- Prefer "Owner unclear", "Attendee unclear", or "Not clearly stated" over guessing.
+- Ignore pleasantries, filler, repeated statements, and side banter unless they materially affect the meeting outcome.
+- Preserve important nuance, especially disagreement, risk, blockers, unresolved questions, and tentative decisions.
+- Keep the notes concise, but do not omit important actions, decisions, deadlines, concerns, or ambiguities.
+- Use bullet points and short paragraphs.
+- Avoid em-dashes, horizontal lines, icons, or emoji.
+
+Content priorities:
+Capture the most important meeting content in this order:
+1. Final decisions
+2. Action items, owners, and deadlines
+3. Open questions and unresolved issues
+4. Risks, blockers, dependencies, and concerns
+5. Important discussion context needed to understand the above
+6. Key topics discussed, especially if they may be useful for later retrieval
+
+Attribution rules:
+- Attribute decisions, statements, or tasks to a specific person only when reasonably clear.
+- If a task is clearly assigned, include the owner.
+- If a task exists but ownership is unclear, say "Owner unclear".
+- If a viewpoint is discussed but the speaker is unclear, summarize neutrally, for example:
+  - "An attendee noted..."
+  - "The group discussed..."
+  - "Someone raised..."
+- Separate people who were clearly present from people merely mentioned.
+- If attendance is uncertain because of transcript limitations, note that in the ambiguities section.
+
+Decision rules:
+- Distinguish between:
+  - discussion
+  - proposal
+  - tentative leaning
+  - final decision
+- Only label something a decision if the transcript supports that clearly.
+- If something appears likely but not finalized, label it as tentative or under consideration.
+- Do not convert brainstorming into a decision.
+
+Correction rules:
+- Correct names, organizations, products, and technical terms when strongly supported by context.
+- If a correction is plausible but not certain, preserve the ambiguity and note it in the ambiguities section.
+- Do not apply phonetic corrections mechanically without contextual support.
+
+Completeness rules:
+The notes should preserve all materially important information needed by someone who did not attend the meeting, including:
+- meeting purpose
+- major topics discussed
+- key decisions
+- action items
+- owners
+- deadlines or timing
+- unresolved questions
+- risks, blockers, and dependencies
+- important technical or operational details when relevant
+- notable attendees or stakeholders when clear
+
+Conciseness rules:
+- Be concise, but not so compressed that the notes become vague or lose retrieval value.
+- Prefer specific nouns, names, systems, and topics over generic abstractions.
+- Avoid repeating the same point across sections unless helpful for clarity.
+- Do not turn the notes into a verbatim transcript or near-transcript.
+
+Missing information:
+- If the title, date/time, duration, or attendees are unavailable or unclear, mark them as "Unknown" or "Not clearly stated".
+- If transcript quality limits confidence, say so explicitly in the ambiguities section.
+
+Output format:
+
+1. General Meeting Information
+Meeting Title: <TITLE (if inferred, so state) or UNKNOWN>
+Date & Time: <DATETIME in YYYY-MM-DD HH:MM:SS format or UNKNOWN>
+Approx. Duration: <DURATION in HH:MM:SS format or UNKNOWN>
+
+2. High-Level Summary
+Provide a concise 2-4 sentence summary of the meeting’s main purpose, major topics, important decisions, and overall outcomes.
+
+3. Key Decisions
+List the main decisions first.
+For each item, include:
+- Decision
+- Status: Final or Tentative
+- Brief context only if needed
+
+4. Action Items / To-Do List
+List each clear action item separately using this format:
+[Task description] – [Responsible Person or Owner unclear] ([Deadline if available])
+
+5. Open Questions / Follow-Up Items
+List unresolved issues, pending decisions, unclear ownership, and items requiring further clarification or follow-up.
+
+6. Attendees
+- Present: [Attendee 1, Attendee 2, ...]
+- Mentioned: [Name 1, Name 2, ...]
+If attendance is uncertain due to transcript limitations, state that briefly.
+
+7. Key Topics Discussed
+List the main topics, systems, projects, or themes discussed. Preserve useful specificity for later retrieval.
+
+8. Detailed Notes
+Organize by topic. Include major discussion points, technical details, rationale for decisions when relevant, dependencies, blockers, concerns, and anything important for future reference.
+
+9. LLM Notes: Assumptions / Ambiguities
+List:
+- uncertain transcript corrections
+- unclear names or terms
+- uncertain speaker attribution
+- uncertain ownership
+- uncertain attendance
+- uncertain dates or deadlines
+- places where the transcript may support more than one interpretation
+
+
+Known recurring transcript issues:
+- URI is often mistranscribed as "you or I" or similar.
+- Jeroen may be mistranscribed phonetically in multiple ways.
+- Zoom speaker labels may reflect a room device, host account, or one attendee rather than the actual speaker.
+- In hybrid or room-based meetings, one labeled speaker may represent multiple in-room participants.
+
+Apply these corrections only when supported by context. If uncertain, preserve the ambiguity and note it in the assumptions / ambiguities section.
 """
 
 # ---------------------- Utility Functions ---------------------- #
@@ -105,7 +250,7 @@ def debug(msg: str) -> None:
     global args
     if not args.debug:
         return
-    return log_and_print("DEBUG:   ", "cyan", msg, "info")
+    return log_and_print("DEBUG:   ", "cyan", msg, "debug")
 
 
 def info(msg: str) -> None:
@@ -113,7 +258,7 @@ def info(msg: str) -> None:
 
 
 def warn(msg: str) -> None:
-    return log_and_print("WARNING: ", "yellow", msg, "info")
+    return log_and_print("WARNING: ", "yellow", msg, "warning")
 
 
 def dry(msg: str) -> None:
@@ -268,15 +413,36 @@ def parse_chat_file(chat_file_path: str) -> list[tuple[str, str, str]]:
     """
     Parses Zoom chat file lines into (timestamp, speaker, message).
 
+    Handles two known Zoom chat file formats:
+
+    Old format (timestamp is HH:MM:SS only, message inline):
+        12:34:56 From Alice to Everyone: Hello there
+
+    New format (timestamp is YYYY-MM-DD HH:MM:SS, message on following indented line):
+        2026-04-21 15:02:29 From Alice to Everyone:
+                Hello there
+
+    Both formats are accepted. Blank lines between entries are ignored.
+    Non-header lines with content are treated as message continuation.
+
+    Only entries addressed "to Everyone" are kept; private chats are discarded.
+
     Args:
         chat_file_path (str): Path to chat file.
 
     Returns:
-        list[tuple]: Parsed chat entries.
+        (line_count, list[tuple]): Total lines read and parsed (timestamp, speaker, message) entries.
     """
     chat_entries = []
-    # Only keep chat entries to everyone. Do not keep private chats.
-    pattern = re.compile(r'^(\d{2}:\d{2}:\d{2}) From (.*?) to Everyone:\s*(.*)')
+    # Accept an optional "YYYY-MM-DD " date prefix before the HH:MM:SS time.
+    # The message text may be empty on the header line (new format puts it on
+    # the next indented line instead).
+    pattern = re.compile(
+        r'^(?:\d{4}-\d{2}-\d{2} )?'    # optional date prefix  (new format)
+        r'(\d{2}:\d{2}:\d{2}) '         # HH:MM:SS timestamp    (captured group 1)
+        r'From (.*?) to Everyone:\s*'   # speaker               (captured group 2)
+        r'(.*)'                          # optional inline msg   (captured group 3)
+    )
     current_timestamp = None
     current_speaker = None
     current_message = ''
@@ -289,12 +455,16 @@ def parse_chat_file(chat_file_path: str) -> list[tuple[str, str, str]]:
             line = line.rstrip()
             match = pattern.match(line)
             if match:
+                # Save the previous entry before starting a new one.
                 if current_timestamp:
                     chat_entries.append((current_timestamp, current_speaker, current_message.strip()))
                 current_timestamp, current_speaker, current_message = match.groups()
             else:
-                if current_timestamp:
-                    current_message += ' ' + line.strip()
+                # Blank lines between entries are fine; non-blank continuation
+                # lines (indented message body in new format) are appended.
+                stripped = line.strip()
+                if current_timestamp and stripped:
+                    current_message += (' ' if current_message else '') + stripped
 
         if current_timestamp:
             chat_entries.append((current_timestamp, current_speaker, current_message.strip()))
@@ -429,48 +599,6 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
     return "\n".join(lines) + "\n"
 
 
-# def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, str, str]]) -> str:
-#     """
-#     Merges captions and chat messages into a chronological transcript.
-
-#     Args:
-#         caption_content (str): Caption file content.
-#         chat_entries (list): Parsed chat entries.
-
-#     Returns:
-#         str: Merged transcript.
-#     """
-#     events = []
-#     time_format = "%H:%M:%S"
-
-#     current_speaker = None
-#     current_block = []
-#     for line in caption_content.splitlines():
-#         match = re.match(r"^\[(.+)\] (\d{2}:\d{2}:\d{2})$", line)
-#         if match:
-#             if current_block:
-#                 timestamp, text = current_block[0]
-#                 events.append((timestamp, f"[{current_speaker}] {timestamp}: {text.strip()}"))
-#                 current_block = []
-#             current_speaker, timestamp = match.groups()
-#             current_block.append((timestamp, ""))
-#         else:
-#             if current_block:
-#                 timestamp, text = current_block[-1]
-#                 current_block[-1] = (timestamp, text + " " + line.strip())
-
-#     if current_block:
-#         timestamp, text = current_block[0]
-#         events.append((timestamp, f"[{current_speaker}] {timestamp}: {text.strip()}"))
-
-#     for timestamp, speaker, message in chat_entries:
-#         events.append((timestamp, f"[{speaker}] {timestamp}: [IN CHAT]: {message}"))
-
-#     events.sort(key=lambda x: datetime.strptime(x[0], time_format))
-#     merged_content = [e[1] for e in events]
-
-#     return "\n".join(merged_content) + "\n"
-
 
 # ---------------------- Summarization ---------------------- #
 
@@ -519,8 +647,6 @@ def summarize_transcript(content: str, client, duration: str, model: str) -> str
         summary: str = response.choices[0].message.content.strip()
         debug(f"Summary 2: {summary}")
         return summary
-    debug(f"Summary 3: {summary}")
-    return summary
 
 
 # ---------------------- Processing Functions ---------------------- #
@@ -565,14 +691,13 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> Tuple[str, str, s
     # Extract meeting metadata from directory name if possible
     meeting_title = dir_name
     meeting_datetime = "Unknown"
-    meta_match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}.\d{2}.\d{2}) (.+)$", dir_name)
+    meta_match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}) (.+)$", dir_name)
     if meta_match:
         meeting_datetime, meeting_title = meta_match.groups()
-        meeting_date_str = meta_match.group(1)
-        meeting_year = meeting_date_str.split("-")[0]
+        meeting_year = meeting_datetime.split("-")[0]
     else:
-        warn(f"Could not parse meeting date from directory '{dir_name}'. Using current year {meeting_year}.")
         meeting_year = str(date.today().year)  # fallback to current year
+        warn(f"Could not parse meeting date from directory '{dir_name}'. Using current year {meeting_year}.")
         pass  # for auto indentation
 
     caption_content = ""
@@ -586,12 +711,16 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> Tuple[str, str, s
         pass  # for auto indentation
 
     chat_entries = []
+    chat_parse_failed = False  # True when file had content but zero entries parsed
     if chat_exists:
         chat_lines, chat_entries = parse_chat_file(chat_file)
         matching_lines = len(chat_entries)
         debug(f"Read {chat_lines:,d} lines. Found {matching_lines:,d} matching chat entries.")
         if matching_lines == 0:
+            chat_parse_failed = True
             warn(f"No matching chat lines found ({chat_lines:,d} lines in file). This is strange.")
+            if not args.force:
+                warn(f"Chat file will NOT be deleted (use --force to override): {chat_file}")
         else:
             debug(f"Lines: {chat_entries}")
             pass  # for auto indentation
@@ -653,8 +782,11 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> Tuple[str, str, s
             safe_action(f"Deleting original caption {caption_file}", os.remove,
                         caption_file, dry_run=args.dry_run)
         if chat_exists:
-            safe_action(f"Deleting original chat {chat_file}", os.remove,
-                        chat_file, dry_run=args.dry_run)
+            if chat_parse_failed and not args.force:
+                warn(f"Keeping chat file with zero parsed entries (re-run with --force to delete): {chat_file}")
+            else:
+                safe_action(f"Deleting original chat {chat_file}", os.remove,
+                            chat_file, dry_run=args.dry_run)
         if not os.listdir(dir_path):
             safe_action(f"Deleting empty meeting directory {dir_path}", os.rmdir,
                         dir_path, dry_run=args.dry_run)
@@ -682,7 +814,11 @@ def process_and_summarize_all(args, selected_models):
 
     processed_count = 0
 
-    for dir_name in os.listdir(args.input_dir):
+    for dir_name in sorted(os.listdir(args.input_dir)):
+        if args.max is not None and processed_count >= args.max:
+            info(f"Reached max limit {args.max}. Stopping.")
+            break
+
         dir_path = os.path.join(args.input_dir, dir_name)
         if not os.path.isdir(dir_path):
             continue
@@ -694,12 +830,9 @@ def process_and_summarize_all(args, selected_models):
 
         summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{meeting_year}")
 
-        if args.max is not None and processed_count >= args.max:
-            info(f"Reached max limit {args.max}. Stopping.")
-            break
-
         duration = compute_duration(merged_file_contents)
 
+        any_summary_written = False
         for model in selected_models:
             info(f"Using: {model}")
 
@@ -739,14 +872,18 @@ def process_and_summarize_all(args, selected_models):
                     ".txt", f".{model}.summary.txt"
                 )
 
-            # Join the safe filename with the summaries directory for the correct path.
-            summary_path = os.path.join(summaries_base_dir, summary_filename)
+            try:
+                summary = summarize_transcript(merged_file_contents, client, duration, model)
+            except openai.APIError as exc:
+                warn(f"OpenAI API error for model '{model}' on '{dir_name}': {exc}. Skipping this model.")
+                continue
+            except Exception as exc:
+                warn(f"Unexpected error summarizing '{dir_name}' with model '{model}': {exc}. Skipping this model.")
+                continue
 
-            summary = summarize_transcript(merged_file_contents, client, duration, model)
             if not args.dry_run:
                 os.makedirs(summaries_base_dir, exist_ok=True)
-                pass  # for auto indentation
-            summary_path = os.path.join(summaries_base_dir, os.path.basename(summary_filename))
+            summary_path = os.path.join(summaries_base_dir, summary_filename)
 
             safe_action(f"Saving summary to {summary_path}", action_func=None, dry_run=args.dry_run)
             if not args.dry_run:
@@ -755,17 +892,20 @@ def process_and_summarize_all(args, selected_models):
                     out.write("Note: The AI has attempted to correct transcription errors.\n\n")
                     out.write(summary)
                     out.write(f"\n\nEnd of Meeting Notes from {os.path.basename(transcript_path)}\n\n\n")
-                    pass  # for auto indentation
-                pass  # for auto indentation
+                any_summary_written = True
             pass  # for auto indentation
 
         if not args.keep_consolidated_transcript:
-            safe_action(f"Deleting consolidated transcript {transcript_path}", os.remove,
-                        transcript_path, dry_run=args.dry_run)
+            if any_summary_written or args.dry_run:
+                safe_action(f"Deleting consolidated transcript {transcript_path}", os.remove,
+                            transcript_path, dry_run=args.dry_run)
+            else:
+                warn(f"Keeping consolidated transcript because no summaries were produced: {transcript_path}")
             pass  # for auto indentation
         processed_count += 1
         pass  # for auto indentation
     pass  # for auto indentation
+
 
 
 # ---------------------- Main ---------------------- #
@@ -789,6 +929,9 @@ def parse_args():
     parser.add_argument("--o3-mini", dest="o3_mini", action="store_true", help="Use o3-mini model.")
     parser.add_argument("--o4-mini", dest="o4_mini", action="store_true", help="Use o4-mini model.")
     parser.add_argument("--output-dir", "-o", type=str, required=True, help="Directory to save outputs.")
+    parser.add_argument("--force", "-f", action="store_true",
+                        help="Allow deletion of chat files that produced zero parsed entries. "
+                             "Without this flag, such files are kept to prevent accidental data loss.")
     args = parser.parse_args()
 
     selected_models = []
