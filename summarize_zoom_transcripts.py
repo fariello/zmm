@@ -5,17 +5,28 @@ summarize_meeting_transcripts.py
 This script consolidates Zoom meeting transcripts (captions and chat logs) and
 sends the cleaned, merged transcripts to OpenAI for summarization.
 
+Modes:
+  Default mode: process raw meeting directories.
+    Reads caption/chat files, merges them chronologically, saves a consolidated
+    transcript, then summarizes it. Optionally deletes originals.
+
+  --from-merged mode: re-summarize already-merged transcripts.
+    Reads previously saved Merged-Transcripts-YYYY/*.txt files directly and
+    sends them to the model(s) again. Useful for re-running on a newer model
+    or a changed prompt. Never deletes the merged transcripts in this mode.
+    Use --year YYYY to limit to a single year's directory.
+
 Features:
 1. Processes meeting directories containing Zoom transcript and chat files.
 2. Merges captions and chat chronologically to reduce token count and remove redundancy.
 3. Adds meeting metadata (title and start datetime) to the consolidated transcript.
-4. Saves consolidated transcripts in OUTPUT_DIR/Transcripts (optional filename cleaning).
+4. Saves consolidated transcripts in OUTPUT_DIR/Merged-Transcripts-YYYY/ (optional).
 5. Summarizes transcripts using OpenAI's chat models into structured meeting notes.
-6. Deletes consolidated transcripts unless --keep is specified.
+6. Deletes consolidated transcripts unless --keep-consolidated-transcript is specified.
 7. Cleans up empty meeting directories after processing.
 8. Offers dry-run mode, max file count, and clobber protection.
 
-Note: Sets temperature to 0.2 for non reasoning models for improved precision and accuracy.
+Note: Sets temperature to 0.2 for non-reasoning models for improved precision.
 """
 
 import os
@@ -796,10 +807,98 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> Tuple[str, str, s
     return transcript_path, meeting_year, merged_file_contents
 
 
+def make_summary_filename(base_filename: str, model: str) -> str:
+    """
+    Derive a summary output filename from a merged transcript filename and model name.
+
+    Strips known Zoom caption suffixes and appends '<model>.summary.txt'.
+    Falls back to replacing '.txt' for non-standard names.
+
+    Args:
+        base_filename: Basename of the merged transcript file.
+        model: Model name string (e.g. 'o4-mini', 'gpt-4o').
+
+    Returns:
+        Summary filename string.
+    """
+    for suffix in (
+        "-meeting_saved_closed_caption.txt",
+        " meeting_saved_closed_caption.txt",
+        "meeting_saved_closed_caption.txt",
+    ):
+        if suffix in base_filename:
+            return base_filename.replace(suffix, f".{model}.summary.txt")
+    # Fallback for non-standard or already-cleaned filenames.
+    return base_filename.replace(".txt", f".{model}.summary.txt")
+
+
+def summarize_one_transcript(
+    transcript_path: str,
+    merged_file_contents: str,
+    summaries_base_dir: str,
+    selected_models: list,
+    client,
+    args,
+) -> bool:
+    """
+    Run all selected models against a single merged transcript and write summaries.
+
+    Args:
+        transcript_path: Path to the merged transcript file (used for display/logging).
+        merged_file_contents: Full text of the merged transcript.
+        summaries_base_dir: Directory where summary files will be written.
+        selected_models: List of model name strings.
+        client: OpenAI client instance.
+        args: Parsed arguments.
+
+    Returns:
+        True if at least one summary was successfully written, False otherwise.
+    """
+    duration = compute_duration(merged_file_contents)
+    base_filename = os.path.basename(transcript_path)
+    dir_label = os.path.basename(os.path.dirname(transcript_path)) or base_filename
+    any_written = False
+
+    for model in selected_models:
+        info(f"Using: {model}")
+
+        summary_filename = make_summary_filename(base_filename, model)
+        summary_path = os.path.join(summaries_base_dir, summary_filename)
+
+        if os.path.isfile(summary_path) and not args.clobber:
+            log_and_print("SKIPPING:", "yellow",
+                          f"{summary_filename} already exists. Use --clobber to overwrite.")
+            continue
+
+        try:
+            summary = summarize_transcript(merged_file_contents, client, duration, model)
+        except openai.APIError as exc:
+            warn(f"OpenAI API error for model '{model}' on '{dir_label}': {exc}. Skipping this model.")
+            continue
+        except Exception as exc:
+            warn(f"Unexpected error summarizing '{dir_label}' with model '{model}': {exc}. Skipping this model.")
+            continue
+
+        if not args.dry_run:
+            os.makedirs(summaries_base_dir, exist_ok=True)
+
+        safe_action(f"Saving summary to {summary_path}", action_func=None, dry_run=args.dry_run)
+        if not args.dry_run:
+            with safe_write(summary_path) as out:
+                out.write(f"Meeting Notes Summary Generated by LLM from {base_filename}\n")
+                out.write("Note: The AI has attempted to correct transcription errors.\n\n")
+                out.write(summary)
+                out.write(f"\n\nEnd of Meeting Notes from {base_filename}\n\n\n")
+            any_written = True
+        pass  # for auto indentation
+
+    return any_written
+
+
 def process_and_summarize_all(args, selected_models):
     """
-    Processes all meeting directories, consolidates transcripts,
-    and runs OpenAI summarization for each.
+    Default mode: process raw meeting directories, consolidate transcripts,
+    and run OpenAI summarization for each.
 
     Args:
         args: Parsed arguments.
@@ -830,70 +929,9 @@ def process_and_summarize_all(args, selected_models):
 
         summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{meeting_year}")
 
-        duration = compute_duration(merged_file_contents)
-
-        any_summary_written = False
-        for model in selected_models:
-            info(f"Using: {model}")
-
-            # Extract just the base filename (not the full path).
-            # This ensures our string replacements don't accidentally modify directory names.
-            # Example:
-            #   transcript_path = "/output/Merged-Transcripts-2025/2025-07-31 Meeting meeting_saved_closed_caption.txt"
-            #   base_filename = "2025-07-31 Meeting meeting_saved_closed_caption.txt"
-            base_filename = os.path.basename(transcript_path)
-
-            # We now safely perform replacements on the filename only.
-            # The goal is to produce a summary filename like:
-            #   "2025-07-31 Meeting.o4-mini.summary.txt"
-            #
-            # We explicitly check for different variants of the caption suffix because
-            # filenames might contain either a dash, a space, or no separator before
-            # "meeting_saved_closed_caption.txt".
-            #
-            # Using base_filename avoids a subtle bug where `.replace()` could modify
-            # parts of the directory path if that pattern appeared there by coincidence.
-            if "-meeting_saved_closed_caption.txt" in base_filename:
-                summary_filename = base_filename.replace(
-                    "-meeting_saved_closed_caption.txt", f".{model}.summary.txt"
-                )
-            elif " meeting_saved_closed_caption.txt" in base_filename:
-                summary_filename = base_filename.replace(
-                    " meeting_saved_closed_caption.txt", f".{model}.summary.txt"
-                )
-            elif "meeting_saved_closed_caption.txt" in base_filename:
-                summary_filename = base_filename.replace(
-                    "meeting_saved_closed_caption.txt", f".{model}.summary.txt"
-                )
-            else:
-                # Fallback: if none of the expected patterns are found, replace ".txt"
-                # with ".{model}.summary.txt". This ensures we still generate a summary file.
-                summary_filename = base_filename.replace(
-                    ".txt", f".{model}.summary.txt"
-                )
-
-            try:
-                summary = summarize_transcript(merged_file_contents, client, duration, model)
-            except openai.APIError as exc:
-                warn(f"OpenAI API error for model '{model}' on '{dir_name}': {exc}. Skipping this model.")
-                continue
-            except Exception as exc:
-                warn(f"Unexpected error summarizing '{dir_name}' with model '{model}': {exc}. Skipping this model.")
-                continue
-
-            if not args.dry_run:
-                os.makedirs(summaries_base_dir, exist_ok=True)
-            summary_path = os.path.join(summaries_base_dir, summary_filename)
-
-            safe_action(f"Saving summary to {summary_path}", action_func=None, dry_run=args.dry_run)
-            if not args.dry_run:
-                with safe_write(summary_path) as out:
-                    out.write(f"Meeting Notes Summary Generated by LLM from {os.path.basename(transcript_path)}\n")
-                    out.write("Note: The AI has attempted to correct transcription errors.\n\n")
-                    out.write(summary)
-                    out.write(f"\n\nEnd of Meeting Notes from {os.path.basename(transcript_path)}\n\n\n")
-                any_summary_written = True
-            pass  # for auto indentation
+        any_summary_written = summarize_one_transcript(
+            transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args
+        )
 
         if not args.keep_consolidated_transcript:
             if any_summary_written or args.dry_run:
@@ -907,6 +945,87 @@ def process_and_summarize_all(args, selected_models):
     pass  # for auto indentation
 
 
+def process_and_summarize_from_merged(args, selected_models):
+    """
+    Re-run mode (--from-merged): summarize already-merged transcript files.
+
+    Reads previously saved Merged-Transcripts-YYYY/*.txt files from --input-dir
+    and sends them to the selected model(s). Summaries are written to
+    --output-dir/Summaries-YYYY/ using the same naming convention as default mode.
+
+    The merged transcript files are NEVER deleted in this mode.
+
+    Args:
+        args: Parsed arguments (args.from_merged must be True).
+        selected_models (list): List of model names.
+    """
+    api_key = read_openai_api_key()
+    client = openai.OpenAI(api_key=api_key)
+
+    # Discover Merged-Transcripts-YYYY directories, optionally filtered by --year.
+    all_entries = sorted(os.listdir(args.input_dir))
+    merged_dirs = []
+    for entry in all_entries:
+        if not entry.startswith("Merged-Transcripts-"):
+            continue
+        year = entry[len("Merged-Transcripts-"):]
+        if args.year and year != args.year:
+            continue
+        full_path = os.path.join(args.input_dir, entry)
+        if os.path.isdir(full_path):
+            merged_dirs.append((year, full_path))
+
+    if not merged_dirs:
+        if args.year:
+            warn(f"No Merged-Transcripts-{args.year} directory found under {args.input_dir}.")
+        else:
+            warn(f"No Merged-Transcripts-YYYY directories found under {args.input_dir}.")
+        return
+
+    processed_count = 0
+
+    for year, merged_dir in merged_dirs:
+        info(f"Scanning merged transcripts for year {year}: {merged_dir}")
+        summaries_base_dir = os.path.join(args.output_dir, f"Summaries-{year}")
+
+        transcript_files = sorted(
+            p for p in os.listdir(merged_dir)
+            if p.endswith(".txt") and not p.endswith(".summary.txt")
+        )
+
+        if not transcript_files:
+            warn(f"No merged transcript files found in {merged_dir}.")
+            continue
+
+        for filename in transcript_files:
+            if args.max is not None and processed_count >= args.max:
+                info(f"Reached max limit {args.max}. Stopping.")
+                return
+
+            transcript_path = os.path.join(merged_dir, filename)
+            info("╞══════════════════════════════════════════════════════════════════════════════╡")
+            info(f"Re-summarizing: {transcript_path}")
+
+            try:
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    merged_file_contents = f.read()
+            except OSError as exc:
+                warn(f"Could not read '{transcript_path}': {exc}. Skipping.")
+                continue
+
+            if not merged_file_contents.strip():
+                warn(f"Empty transcript file: {transcript_path}. Skipping.")
+                continue
+
+            summarize_one_transcript(
+                transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args
+            )
+            processed_count += 1
+            pass  # for auto indentation
+        pass  # for auto indentation
+    pass  # for auto indentation
+
+
 
 # ---------------------- Main ---------------------- #
 
@@ -915,23 +1034,53 @@ args = None
 
 def parse_args():
     global args
-    parser = argparse.ArgumentParser(description="Consolidate and summarize Zoom meeting transcripts.")
-    parser.add_argument("--4o", dest="_4o", action="store_true", help="Run with gpt-4o model")
-    parser.add_argument("--4o-mini", dest="_4o_mini", action="store_true", help="Use gpt-4o-mini model (default).")
-    parser.add_argument("--clobber", "-c", action="store_true", help="Overwrite existing files (will still make backups).")
+    parser = argparse.ArgumentParser(
+        description="Consolidate and summarize Zoom meeting transcripts.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  # Default: merge raw meeting dirs and summarize\n"
+            "  %(prog)s --input-dir /zoom/meetings --output-dir /zoom/output --o4-mini\n"
+            "\n"
+            "  # Re-summarize previously merged transcripts with a new model\n"
+            "  %(prog)s --from-merged --input-dir /zoom/output --output-dir /zoom/output --4o\n"
+            "\n"
+            "  # Re-summarize only 2025 transcripts\n"
+            "  %(prog)s --from-merged --year 2025 --input-dir /zoom/output --output-dir /zoom/output --o4-mini\n"
+        ),
+    )
+    parser.add_argument("--4o", dest="_4o", action="store_true", help="Run with gpt-4o model.")
+    parser.add_argument("--4o-mini", dest="_4o_mini", action="store_true", help="Use gpt-4o-mini model.")
+    parser.add_argument("--clobber", "-c", action="store_true", help="Overwrite existing summary files (will still make backups).")
     parser.add_argument("--debug", "-d", action="store_true", help="Show debugging info.")
     parser.add_argument("--dry-run", "-D", action="store_true", help="Show actions without making changes.")
-    parser.add_argument("--input-dir", "-i", type=str, required=True, help="Directory containing meeting directories.")
-    parser.add_argument("--keep-consolidated-transcript", "-k", action="store_true", help="Keep consolidated transcripts in OUTPUT_DIR/Transcripts.")
-    parser.add_argument("--keep-originals", "-K", action="store_true", help="Do not remove original caption/chat files or meeting dirs.")
-    parser.add_argument("--max", "-m", type=int, default=None, help="Maximum number of meetings to process.")
-    parser.add_argument("--no-clean-names", "-n", action="store_true", help="Do not clean filenames.")
-    parser.add_argument("--o3-mini", dest="o3_mini", action="store_true", help="Use o3-mini model.")
-    parser.add_argument("--o4-mini", dest="o4_mini", action="store_true", help="Use o4-mini model.")
-    parser.add_argument("--output-dir", "-o", type=str, required=True, help="Directory to save outputs.")
     parser.add_argument("--force", "-f", action="store_true",
                         help="Allow deletion of chat files that produced zero parsed entries. "
                              "Without this flag, such files are kept to prevent accidental data loss.")
+    parser.add_argument("--from-merged", action="store_true",
+                        help="Re-run mode: read already-merged transcripts from "
+                             "INPUT_DIR/Merged-Transcripts-YYYY/ and re-summarize them. "
+                             "Useful for applying a new model or updated prompt to existing transcripts. "
+                             "Merged transcript files are never deleted in this mode. "
+                             "Use --year to limit to a single year.")
+    parser.add_argument("--input-dir", "-i", type=str, required=True,
+                        help="In default mode: directory containing raw meeting directories. "
+                             "In --from-merged mode: directory containing Merged-Transcripts-YYYY/ subdirs "
+                             "(typically the same as --output-dir from a prior run).")
+    parser.add_argument("--keep-consolidated-transcript", "-k", action="store_true",
+                        help="Keep consolidated transcripts in OUTPUT_DIR/Merged-Transcripts-YYYY/. "
+                             "Ignored in --from-merged mode (merged files are always kept).")
+    parser.add_argument("--keep-originals", "-K", action="store_true",
+                        help="Do not remove original caption/chat files or meeting dirs.")
+    parser.add_argument("--max", "-m", type=int, default=None,
+                        help="Maximum number of transcript files to process.")
+    parser.add_argument("--no-clean-names", "-n", action="store_true", help="Do not clean filenames.")
+    parser.add_argument("--o3-mini", dest="o3_mini", action="store_true", help="Use o3-mini model.")
+    parser.add_argument("--o4-mini", dest="o4_mini", action="store_true", help="Use o4-mini model (default if no model specified).")
+    parser.add_argument("--output-dir", "-o", type=str, required=True,
+                        help="Directory to save summaries (and merged transcripts in default mode).")
+    parser.add_argument("--year", "-y", type=str, default=None, metavar="YYYY",
+                        help="In --from-merged mode: limit processing to Merged-Transcripts-YYYY for this year.")
     args = parser.parse_args()
 
     selected_models = []
@@ -970,11 +1119,14 @@ def setup_logging(output_dir):
 def main():
     """
     Main entry point. Parses arguments, sets up logging,
-    and processes/summarizes all meetings.
+    and dispatches to the appropriate processing mode.
     """
     args, selected_models = parse_args()
     setup_logging(args.output_dir)
-    process_and_summarize_all(args, selected_models)
+    if args.from_merged:
+        process_and_summarize_from_merged(args, selected_models)
+    else:
+        process_and_summarize_all(args, selected_models)
     pass  # for auto indentation
 
 
