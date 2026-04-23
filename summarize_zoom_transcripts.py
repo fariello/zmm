@@ -281,7 +281,19 @@ def safe_trash(path: str, trash_dir: str, dry_run: bool = False) -> None:
         return
     os.makedirs(trash_dir, exist_ok=True)
     info(f"Moving to to-delete: {path} -> {dest}")
-    shutil.move(path, dest)
+    try:
+        shutil.move(path, dest)
+    except PermissionError as exc:
+        warn(
+            f"Could not move '{path}' to to-delete/: {exc}. "
+            f"File left in place (may be locked by Windows/OneDrive). "
+            f"Processing will continue."
+        )
+    except OSError as exc:
+        warn(
+            f"Could not move '{path}' to to-delete/: {exc}. "
+            f"File left in place. Processing will continue."
+        )
 
 
 def clean_filename(filename: str) -> str:
