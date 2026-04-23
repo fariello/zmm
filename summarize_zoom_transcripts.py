@@ -8,12 +8,12 @@ sends the cleaned, merged transcripts to OpenAI for summarization.
 Modes:
   Default mode: process raw meeting directories.
     Reads caption/chat files, merges them chronologically, saves a consolidated
-    transcript, then summarizes it. Optionally deletes originals.
+    transcript, then summarizes it. Optionally moves originals to to-delete/.
 
   --from-merged mode: re-summarize already-merged transcripts.
     Reads previously saved Merged-Transcripts-YYYY/*.txt files directly and
     sends them to the model(s) again. Useful for re-running on a newer model
-    or a changed prompt. Never deletes the merged transcripts in this mode.
+    or a changed prompt. Never moves the merged transcripts in this mode.
     Use --year YYYY to limit to a single year's directory.
 
 Features:
@@ -22,7 +22,7 @@ Features:
 3. Adds meeting metadata (title and start datetime) to the consolidated transcript.
 4. Saves consolidated transcripts in OUTPUT_DIR/Merged-Transcripts-YYYY/ (optional).
 5. Summarizes transcripts using OpenAI's chat models into structured meeting notes.
-6. Deletes consolidated transcripts unless --keep-consolidated-transcript is specified.
+6. Moves consolidated transcripts to OUTPUT_DIR/to-delete/ (unless --keep-consolidated-transcript).
 7. Cleans up empty meeting directories after processing.
 8. Offers dry-run mode, max file count, and clobber protection.
 
@@ -251,6 +251,37 @@ def safe_write(path: str) -> IO[str]:
         f.close()
         pass  # for auto-indentation
     pass  # for auto-indentation
+
+
+def safe_trash(path: str, trash_dir: str, dry_run: bool = False) -> None:
+    """
+    Move a file or directory to a trash staging area instead of deleting it.
+
+    The item is moved to trash_dir/<basename>. If an item with that name
+    already exists in trash_dir (from a previous run), a numeric suffix
+    (.001, .002, ...) is appended to avoid collisions.
+
+    Args:
+        path:      Absolute path to the file or directory to move.
+        trash_dir: Destination staging directory (created if needed).
+        dry_run:   If True, log the action but do not move anything.
+    """
+    basename = os.path.basename(path.rstrip(os.sep))
+    dest = os.path.join(trash_dir, basename)
+    if os.path.exists(dest):
+        stem, ext = os.path.splitext(basename)
+        counter = 1
+        while True:
+            dest = os.path.join(trash_dir, f"{stem}.{counter:03d}{ext}")
+            if not os.path.exists(dest):
+                break
+            counter += 1
+    if dry_run:
+        dry(f"Would move to to-delete: {path} -> {dest}")
+        return
+    os.makedirs(trash_dir, exist_ok=True)
+    info(f"Moving to to-delete: {path} -> {dest}")
+    shutil.move(path, dest)
 
 
 def clean_filename(filename: str) -> str:
@@ -710,17 +741,14 @@ def process_meeting_dir(dir_path: str, dir_name: str, args) -> Tuple[str, str, s
         pass  # for auto indentation
     else:
         if caption_exists:
-            safe_action(f"Deleting original caption {caption_file}", os.remove,
-                        caption_file, dry_run=args.dry_run)
+            safe_trash(caption_file, os.path.join(args.output_dir, "to-delete"), dry_run=args.dry_run)
         if chat_exists:
             if chat_parse_failed and not args.force:
-                warn(f"Keeping chat file with zero parsed entries (re-run with --force to delete): {chat_file}")
+                warn(f"Keeping chat file with zero parsed entries (re-run with --force to move): {chat_file}")
             else:
-                safe_action(f"Deleting original chat {chat_file}", os.remove,
-                            chat_file, dry_run=args.dry_run)
+                safe_trash(chat_file, os.path.join(args.output_dir, "to-delete"), dry_run=args.dry_run)
         if not os.listdir(dir_path):
-            safe_action(f"Deleting empty meeting directory {dir_path}", os.rmdir,
-                        dir_path, dry_run=args.dry_run)
+            safe_trash(dir_path, os.path.join(args.output_dir, "to-delete"), dry_run=args.dry_run)
             pass  # for auto indentation
         pass  # for auto indentation
 
@@ -861,8 +889,9 @@ def process_and_summarize_all(args, selected_models):
 
         if not args.keep_consolidated_transcript:
             if any_summary_written or args.dry_run:
-                safe_action(f"Deleting consolidated transcript {transcript_path}", os.remove,
-                            transcript_path, dry_run=args.dry_run)
+                safe_trash(transcript_path,
+                           os.path.join(args.output_dir, "to-delete"),
+                           dry_run=args.dry_run)
             else:
                 warn(f"Keeping consolidated transcript because no summaries were produced: {transcript_path}")
             pass  # for auto indentation
@@ -1221,7 +1250,7 @@ def parse_args():
                         help="Keep consolidated transcripts in OUTPUT_DIR/Merged-Transcripts-YYYY/. "
                              "Ignored in --from-merged and --files modes (merged files are always kept).")
     parser.add_argument("--keep-originals", "-K", action="store_true",
-                        help="Do not remove original caption/chat files or meeting dirs.")
+                        help="Do not move original caption/chat files or meeting dirs to to-delete/.")
     parser.add_argument("--list-prompts", action="store_true",
                         help="List the available prompt names from the prompts/ directory and exit.")
     parser.add_argument("--match", type=str, default=None, metavar="PATTERN",
