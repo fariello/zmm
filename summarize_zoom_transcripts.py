@@ -319,30 +319,105 @@ def clean_filename(filename: str) -> str:
     return name + ext
 
 
-def read_openai_api_key() -> str:
-    """
-    Reads the OpenAI API key from ~/.config/openai.cfg.
+# Well-known model aliases for --list-models display.
+KNOWN_MODELS = [
+    "o4-mini",
+    "o3-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+]
 
-    Returns:
-        str: The API key.
+CONFIG_FILENAME = "summarize_zoom_transcripts.cfg"
 
-    Raises:
-        FileNotFoundError: If the config file does not exist.
-        ValueError: If the api_key is not found in the config file.
+
+def _parse_config_file(config_path: str) -> dict:
     """
-    config_path = os.path.expanduser("~/.config/openai.cfg")
-    if not os.path.isfile(config_path):
-        raise FileNotFoundError(f"OpenAI config file not found at {config_path}")
-    info(f"🔍 Reading config file: '{config_path}'")
+    Parse a key=value config file (INI-style, no sections).
+
+    Lines starting with '#' and blank lines are ignored.
+    Returns a dict of the parsed key/value pairs.
+    """
+    result = {}
     with open(config_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line.startswith("api_key"):
-                _, key = line.split("=", 1)
-                return key.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                result[key.strip()] = val.strip()
             pass  # for auto indentation
         pass  # for auto indentation
-    raise ValueError(f"No 'api_key' found in {config_path}")
+    return result
+
+
+def load_config(explicit_path: str = None) -> dict:
+    """
+    Load API configuration from the first config file found.
+
+    Search order (first match wins):
+      1. explicit_path             (if provided via --config)
+      2. ./summarize_zoom_transcripts.cfg         (CWD)
+      3. <script_dir>/summarize_zoom_transcripts.cfg
+      4. ~/.config/summarize_zoom_transcripts.cfg
+      5. ~/.config/openai.cfg      (legacy: api_key only)
+
+    Returns:
+        dict with keys: api_key (str), base_url (str|None),
+        default_model (str|None), no_temperature (bool).
+
+    Raises:
+        SystemExit(2): If no config file is found or api_key is missing.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    search_paths = [
+        os.path.join(os.getcwd(), CONFIG_FILENAME),
+        os.path.join(script_dir, CONFIG_FILENAME),
+        os.path.expanduser(f"~/.config/{CONFIG_FILENAME}"),
+        os.path.expanduser("~/.config/openai.cfg"),
+    ]
+
+    if explicit_path:
+        search_paths = [explicit_path]
+
+    config_path = None
+    for candidate in search_paths:
+        if os.path.isfile(candidate):
+            config_path = candidate
+            break
+
+    if config_path is None:
+        locations = "\n  ".join(search_paths)
+        print(f"ERROR: No config file found. Searched:\n  {locations}")
+        print(f"See {CONFIG_FILENAME}.example for format.")
+        raise SystemExit(2)
+
+    info(f"🔍 Reading config file: '{config_path}'")
+    raw = _parse_config_file(config_path)
+
+    api_key = raw.get("api_key", "").strip()
+    if not api_key:
+        print(f"ERROR: No 'api_key' found in {config_path}")
+        raise SystemExit(2)
+
+    base_url = raw.get("base_url", "").strip() or None
+    default_model = raw.get("default_model", "").strip() or None
+    no_temp_raw = raw.get("no_temperature", "").strip().lower()
+    no_temperature = no_temp_raw in ("true", "yes", "1")
+
+    if base_url:
+        info(f"🌐 Using custom API endpoint: {base_url}")
+    if default_model:
+        info(f"🤖 Config default model: {default_model}")
+    if no_temperature:
+        info(f"🌡️ Temperature parameter disabled by config.")
+
+    return {
+        "api_key": api_key,
+        "base_url": base_url,
+        "default_model": default_model,
+        "no_temperature": no_temperature,
+    }
 
 
 def compute_duration(transcript_text: str) -> str:
@@ -575,9 +650,17 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
 
 # ---------------------- Summarization ---------------------- #
 
-def summarize_transcript(content: str, client, duration: str, model: str, system_prompt: str) -> str:
+def summarize_transcript(content: str, client, duration: str, model: str,
+                          system_prompt: str, no_temperature: bool = False) -> str:
     """
-    Sends transcript to OpenAI for summarization.
+    Sends transcript to an OpenAI-compatible API for summarization.
+
+    Temperature handling:
+      - If no_temperature is True (from config), never sends temperature.
+      - Otherwise tries with temperature=0.2 first. If the API rejects it
+        (e.g. reasoning models like o3-mini/o4-mini), retries without
+        temperature and suggests adding 'no_temperature = true' to the
+        config file.
 
     Args:
         content (str): Transcript content.
@@ -585,6 +668,7 @@ def summarize_transcript(content: str, client, duration: str, model: str, system
         duration (str): Approximate meeting duration.
         model (str): Model name.
         system_prompt (str): The system prompt text to use.
+        no_temperature (bool): If True, never send temperature parameter.
 
     Returns:
         str: Summarized meeting notes.
@@ -592,35 +676,40 @@ def summarize_transcript(content: str, client, duration: str, model: str, system
     preface = f"Approximate Duration: {duration}\n\n"
     content_with_duration = preface + content
 
-    if model == "o3-mini" or model == "o4-mini":
-        # o3-mini and o4-mini do not do temperature settings
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": content_with_duration}
+    ]
+
+    if no_temperature:
+        debug("Skipping temperature parameter (disabled by config).")
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content_with_duration}
-            ]
+            messages=messages,
         )
-        # Extract and strip text from the first choice.
-        summary: str = response.choices[0].message.content.strip()
-        debug(f"Summary 1: {summary}")
-        return summary
     else:
-        # For other models, set the temperature to 0.2 so that the results don't
-        # meander or make up stuff while still providing some flexibility. I
-        # have not tested whether 0.1 would be better.
-        response = client.chat.completions.create(
-            model=model,
-            temperature=0.2,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content_with_duration}
-            ]
-        )
-        # Extract and strip content from the first choice message.
-        summary: str = response.choices[0].message.content.strip()
-        debug(f"Summary 2: {summary}")
-        return summary
+        try:
+            # Use a low temperature (0.2) for precision without hallucination.
+            response = client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                messages=messages,
+            )
+        except openai.BadRequestError as exc:
+            warn(
+                f"Model '{model}' rejected the temperature parameter: {exc}\n"
+                f"         Retrying without temperature. To silence this warning,\n"
+                f"         add 'no_temperature = true' to your config file."
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+            )
+        pass  # for auto indentation
+
+    summary: str = response.choices[0].message.content.strip()
+    debug(f"Summary: {summary}")
+    return summary
 
 
 # ---------------------- Processing Functions ---------------------- #
@@ -774,22 +863,27 @@ def make_summary_filename(base_filename: str, model: str) -> str:
     Strips known Zoom caption suffixes and appends '<model>.summary.txt'.
     Falls back to replacing '.txt' for non-standard names.
 
+    Model names containing '/' (e.g. 'its_direct/pt3-claude-opus-4.6-1m-us')
+    are sanitized by replacing '/' with '--' to avoid creating subdirectories.
+
     Args:
         base_filename: Basename of the merged transcript file.
-        model: Model name string (e.g. 'o4-mini', 'gpt-4o').
+        model: Model name string (e.g. 'o4-mini', 'gpt-4o',
+               'its_direct/pt3-claude-opus-4.6-1m-us').
 
     Returns:
         Summary filename string.
     """
+    safe_model = model.replace("/", "--")
     for suffix in (
         "-meeting_saved_closed_caption.txt",
         " meeting_saved_closed_caption.txt",
         "meeting_saved_closed_caption.txt",
     ):
         if suffix in base_filename:
-            return base_filename.replace(suffix, f".{model}.summary.txt")
+            return base_filename.replace(suffix, f".{safe_model}.summary.txt")
     # Fallback for non-standard or already-cleaned filenames.
-    return base_filename.replace(".txt", f".{model}.summary.txt")
+    return base_filename.replace(".txt", f".{safe_model}.summary.txt")
 
 
 def summarize_one_transcript(
@@ -800,6 +894,7 @@ def summarize_one_transcript(
     client,
     args,
     system_prompt: str,
+    no_temperature: bool = False,
 ) -> bool:
     """
     Run all selected models against a single merged transcript and write summaries.
@@ -812,6 +907,7 @@ def summarize_one_transcript(
         client: OpenAI client instance.
         args: Parsed arguments.
         system_prompt: The system prompt text to send to the model.
+        no_temperature: If True, never send temperature parameter to the API.
 
     Returns:
         True if at least one summary was successfully written, False otherwise.
@@ -833,9 +929,12 @@ def summarize_one_transcript(
             continue
 
         try:
-            summary = summarize_transcript(merged_file_contents, client, duration, model, system_prompt)
+            summary = summarize_transcript(
+                merged_file_contents, client, duration, model, system_prompt,
+                no_temperature=no_temperature,
+            )
         except openai.APIError as exc:
-            warn(f"OpenAI API error for model '{model}' on '{dir_label}': {exc}. Skipping this model.")
+            warn(f"API error for model '{model}' on '{dir_label}': {exc}. Skipping this model.")
             continue
         except Exception as exc:
             warn(f"Unexpected error summarizing '{dir_label}' with model '{model}': {exc}. Skipping this model.")
@@ -858,21 +957,24 @@ def summarize_one_transcript(
     return any_written
 
 
-def process_and_summarize_all(args, selected_models):
+def process_and_summarize_all(args, selected_models, config):
     """
     Default mode: process raw meeting directories, consolidate transcripts,
-    and run OpenAI summarization for each.
+    and run summarization for each via an OpenAI-compatible API.
 
     Args:
         args: Parsed arguments.
         selected_models (list): List of model names.
+        config (dict): Loaded config with api_key, base_url, no_temperature.
     """
     if not args.dry_run:
         os.makedirs(args.output_dir, exist_ok=True)
         pass  # for auto indentation
 
-    api_key = read_openai_api_key()
-    client = openai.OpenAI(api_key=api_key)
+    client_kwargs = {"api_key": config["api_key"]}
+    if config["base_url"]:
+        client_kwargs["base_url"] = config["base_url"]
+    client = openai.OpenAI(**client_kwargs)
     system_prompt = resolve_prompt(args)
     info(f"Using prompt: {args.prompt_label}")
 
@@ -897,6 +999,7 @@ def process_and_summarize_all(args, selected_models):
         any_summary_written = summarize_one_transcript(
             transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args,
             system_prompt=system_prompt,
+            no_temperature=config["no_temperature"],
         )
 
         if not args.keep_consolidated_transcript:
@@ -936,7 +1039,7 @@ def year_from_path(path: str) -> str:
     return str(date.today().year)
 
 
-def process_and_summarize_from_merged(args, selected_models):
+def process_and_summarize_from_merged(args, selected_models, config):
     """
     Re-run mode (--from-merged): summarize already-merged transcript files.
 
@@ -949,9 +1052,12 @@ def process_and_summarize_from_merged(args, selected_models):
     Args:
         args: Parsed arguments (args.from_merged must be True).
         selected_models (list): List of model names.
+        config (dict): Loaded config with api_key, base_url, no_temperature.
     """
-    api_key = read_openai_api_key()
-    client = openai.OpenAI(api_key=api_key)
+    client_kwargs = {"api_key": config["api_key"]}
+    if config["base_url"]:
+        client_kwargs["base_url"] = config["base_url"]
+    client = openai.OpenAI(**client_kwargs)
     system_prompt = resolve_prompt(args)
     info(f"Using prompt: {args.prompt_label}")
 
@@ -1015,6 +1121,7 @@ def process_and_summarize_from_merged(args, selected_models):
             summarize_one_transcript(
                 transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args,
                 system_prompt=system_prompt,
+                no_temperature=config["no_temperature"],
             )
             processed_count += 1
             pass  # for auto indentation
@@ -1022,7 +1129,7 @@ def process_and_summarize_from_merged(args, selected_models):
     pass  # for auto indentation
 
 
-def process_specific_files(args, selected_models):
+def process_specific_files(args, selected_models, config):
     """
     --files mode: summarize one or more specific merged transcript files.
 
@@ -1036,9 +1143,12 @@ def process_specific_files(args, selected_models):
     Args:
         args: Parsed arguments (args.files must be non-empty).
         selected_models (list): List of model names.
+        config (dict): Loaded config with api_key, base_url, no_temperature.
     """
-    api_key = read_openai_api_key()
-    client = openai.OpenAI(api_key=api_key)
+    client_kwargs = {"api_key": config["api_key"]}
+    if config["base_url"]:
+        client_kwargs["base_url"] = config["base_url"]
+    client = openai.OpenAI(**client_kwargs)
     system_prompt = resolve_prompt(args)
     info(f"Using prompt: {args.prompt_label}")
 
@@ -1075,6 +1185,7 @@ def process_specific_files(args, selected_models):
         summarize_one_transcript(
             transcript_path, merged_file_contents, summaries_base_dir, selected_models, client, args,
             system_prompt=system_prompt,
+            no_temperature=config["no_temperature"],
         )
         processed_count += 1
         pass  # for auto indentation
@@ -1201,23 +1312,29 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  # Default: merge raw meeting dirs and summarize\n"
-            "  %(prog)s --input-dir /zoom/meetings --output-dir /zoom/output --o4-mini\n"
+            "  # Default: merge raw meeting dirs and summarize (uses config default model)\n"
+            "  %(prog)s --input-dir /zoom/meetings --output-dir /zoom/output\n"
+            "\n"
+            "  # Specify a model explicitly\n"
+            "  %(prog)s --model gpt-4o --input-dir /zoom/meetings --output-dir /zoom/output\n"
+            "\n"
+            "  # Use a custom Bedrock model from config\n"
+            "  %(prog)s --model its_direct/pt1-nova-2-lite-us --input-dir /zoom/meetings --output-dir /zoom/output\n"
             "\n"
             "  # Re-summarize all previously merged transcripts with a new model\n"
-            "  %(prog)s --from-merged --input-dir /zoom/output --output-dir /zoom/output --4o\n"
+            "  %(prog)s --from-merged --model gpt-4o --input-dir /zoom/output --output-dir /zoom/output\n"
             "\n"
             "  # Re-summarize only 2025 transcripts\n"
-            "  %(prog)s --from-merged --year 2025 --input-dir /zoom/output --output-dir /zoom/output --o4-mini\n"
+            "  %(prog)s --from-merged --year 2025 --input-dir /zoom/output --output-dir /zoom/output\n"
             "\n"
             "  # Re-summarize transcripts matching a name fragment\n"
-            "  %(prog)s --from-merged --match 'PMO Team' --input-dir /zoom/output --output-dir /zoom/output --4o\n"
+            "  %(prog)s --from-merged --match 'PMO Team' --input-dir /zoom/output --output-dir /zoom/output\n"
             "\n"
             "  # Re-summarize one or a few specific files\n"
-            "  %(prog)s --files /zoom/output/Merged-Transcripts-2026/2026-04-21-PMO-Team.txt --output-dir /zoom/output --4o\n"
+            "  %(prog)s --files /zoom/output/Merged-Transcripts-2026/2026-04-21-PMO-Team.txt --output-dir /zoom/output\n"
             "\n"
             "  # Use a custom prompt (name from prompts/ dir, or a file path)\n"
-            "  %(prog)s --prompt interview --files /zoom/output/Merged-Transcripts-2026/2026-04-21-Search.txt --output-dir /zoom/output --o4-mini\n"
+            "  %(prog)s --prompt interview --files /zoom/output/Merged-Transcripts-2026/2026-04-21-Search.txt --output-dir /zoom/output\n"
             "\n"
             "  # Specify a prompt as a literal string\n"
             "  %(prog)s --prompt-string 'Summarize this meeting in 3 bullet points.' --files /zoom/output/... --output-dir /zoom/output\n"
@@ -1225,8 +1342,12 @@ def parse_args():
             "  # Add extra instructions to the default prompt\n"
             "  %(prog)s --add 'Focus especially on budget and staffing decisions.' --from-merged --input-dir /zoom/output --output-dir /zoom/output\n"
             "\n"
-            "  # List available prompts\n"
+            "  # List available prompts and models\n"
             "  %(prog)s --list-prompts\n"
+            "  %(prog)s --list-models\n"
+            "\n"
+            "  # Use an explicit config file\n"
+            "  %(prog)s --config /path/to/my.cfg --input-dir /zoom/meetings --output-dir /zoom/output\n"
         ),
     )
     parser.add_argument("--add", type=str, default=None, metavar="TEXT",
@@ -1235,9 +1356,11 @@ def parse_args():
                              "prompt. Useful for adding one-off context or focus instructions "
                              "without creating a new prompt file. "
                              "Example: --add 'Focus especially on budget decisions.'")
-    parser.add_argument("--4o", dest="_4o", action="store_true", help="Run with gpt-4o model.")
-    parser.add_argument("--4o-mini", dest="_4o_mini", action="store_true", help="Use gpt-4o-mini model.")
     parser.add_argument("--clobber", "-c", action="store_true", help="Overwrite existing summary files (will still make backups).")
+    parser.add_argument("--config", type=str, default=None, metavar="PATH",
+                        help="Path to a config file. Overrides the default search order "
+                             "(CWD, script dir, ~/.config/). "
+                             "See summarize_zoom_transcripts.cfg.example for format.")
     parser.add_argument("--debug", "-d", action="store_true", help="Show debugging info.")
     parser.add_argument("--dry-run", "-D", action="store_true", help="Show actions without making changes.")
     parser.add_argument("--files", nargs="+", metavar="FILE", default=None,
@@ -1263,6 +1386,8 @@ def parse_args():
                              "Ignored in --from-merged and --files modes (merged files are always kept).")
     parser.add_argument("--keep-originals", "-K", action="store_true",
                         help="Do not move original caption/chat files or meeting dirs to to-delete/.")
+    parser.add_argument("--list-models", action="store_true",
+                        help="List well-known model names and the config default, then exit.")
     parser.add_argument("--list-prompts", action="store_true",
                         help="List the available prompt names from the prompts/ directory and exit.")
     parser.add_argument("--match", type=str, default=None, metavar="PATTERN",
@@ -1271,10 +1396,14 @@ def parse_args():
                              "Example: --match 'PMO Team'")
     parser.add_argument("--max", "-m", type=int, default=None,
                         help="Maximum number of transcript files to process.")
+    parser.add_argument("--model", nargs="+", metavar="NAME", default=None,
+                        help="Model name(s) to use for summarization. Can specify one or more "
+                             "models (e.g. --model gpt-4o o4-mini). Accepts any model name "
+                             "supported by the configured API endpoint, including custom Bedrock "
+                             "models like 'its_direct/pt1-nova-2-lite-us'. "
+                             "Defaults to the 'default_model' from the config file, or 'o4-mini'.")
     parser.add_argument("--no-clean-names", "-n", action="store_true", help="Do not clean filenames.")
-    parser.add_argument("--o3-mini", dest="o3_mini", action="store_true", help="Use o3-mini model.")
-    parser.add_argument("--o4-mini", dest="o4_mini", action="store_true", help="Use o4-mini model (default if no model specified).")
-    parser.add_argument("--output-dir", "-o", type=str, required=True,
+    parser.add_argument("--output-dir", "-o", type=str, default=None,
                         help="Directory to save summaries (and merged transcripts in default mode).")
     parser.add_argument("--prompt", "-p", type=str, default="default",
                         help="Prompt to use for summarization. Accepts a name from the prompts/ "
@@ -1303,29 +1432,63 @@ def parse_args():
             print(f"No prompts found in {PROMPTS_DIR}/")
         raise SystemExit(0)
 
+    # Handle --list-models (loads config, queries the API for available models).
+    if args.list_models:
+        try:
+            config = load_config(explicit_path=args.config)
+        except SystemExit:
+            print("ERROR: Could not load config file. A valid config is needed to query models.")
+            print(f"See {CONFIG_FILENAME}.example for format.")
+            raise SystemExit(2)
+
+        endpoint = config["base_url"] or "https://api.openai.com/v1"
+        print(f"API endpoint: {endpoint}\n")
+
+        # Build the client and query available models.
+        client_kwargs = {"api_key": config["api_key"]}
+        if config["base_url"]:
+            client_kwargs["base_url"] = config["base_url"]
+        client = openai.OpenAI(**client_kwargs)
+
+        try:
+            models_response = client.models.list()
+            model_ids = sorted(m.id for m in models_response.data)
+            if model_ids:
+                print(f"Available models ({len(model_ids)}):")
+                for m in model_ids:
+                    marker = "  ◀ config default" if m == config.get("default_model") else ""
+                    print(f"  {m}{marker}")
+            else:
+                print("No models returned by the API.")
+        except Exception as exc:
+            print(f"Could not query models from API: {exc}")
+            print("\nFalling back to well-known model list:")
+            for m in KNOWN_MODELS:
+                print(f"  {m}")
+
+        if config["default_model"]:
+            print(f"\nConfig default model: {config['default_model']}")
+        else:
+            print(f"\nNo default_model set in config (will use: o4-mini)")
+        print("\nYou can use any model name accepted by your API endpoint with --model NAME.")
+        raise SystemExit(0)
+
     # Validate: --prompt-string and --prompt are mutually exclusive.
     if args.prompt_string and args.prompt != "default":
         parser.error("--prompt-string and --prompt are mutually exclusive. "
                      "Use one or the other (or use --add to append to a file-based prompt).")
 
+    # Validate: --output-dir is required for all modes except --list-prompts/--list-models.
+    if args.output_dir is None:
+        parser.error("the following arguments are required: --output-dir/-o")
+
     # Validate: --input-dir is required unless --files or --status is given.
     if not args.files and not args.status and args.input_dir is None:
         parser.error("--input-dir is required unless --files is specified.")
 
-    selected_models = []
-    if args._4o:
-        selected_models.append("gpt-4o")
-    if args._4o_mini:
-        selected_models.append("gpt-4o-mini")
-    if args.o3_mini:
-        selected_models.append("o3-mini")
-    if args.o4_mini:
-        selected_models.append("o4-mini")
-
-    if not selected_models:
-        selected_models = ["o4-mini"]
-
-    return args, selected_models
+    # Model selection is deferred until config is loaded (in main()).
+    # Store the raw CLI value so main() can merge it with the config default.
+    return args
 
 
 def setup_logging(output_dir):
@@ -1347,20 +1510,34 @@ def setup_logging(output_dir):
 
 def main():
     """
-    Main entry point. Parses arguments, sets up logging,
-    and dispatches to the appropriate processing mode.
+    Main entry point. Parses arguments, loads configuration,
+    resolves model selection, and dispatches to the appropriate processing mode.
     """
-    args, selected_models = parse_args()
+    args = parse_args()
     if args.status:
         report_status(args)
         return
+
+    # Load config (api_key, base_url, default_model, no_temperature).
+    config = load_config(explicit_path=args.config)
+
+    # Resolve model selection: CLI --model overrides config default.
+    if args.model:
+        selected_models = args.model
+    elif config["default_model"]:
+        selected_models = [config["default_model"]]
+    else:
+        selected_models = ["o4-mini"]
+
+    info(f"Selected model(s): {', '.join(selected_models)}")
+
     setup_logging(args.output_dir)
     if args.files:
-        process_specific_files(args, selected_models)
+        process_specific_files(args, selected_models, config)
     elif args.from_merged:
-        process_and_summarize_from_merged(args, selected_models)
+        process_and_summarize_from_merged(args, selected_models, config)
     else:
-        process_and_summarize_all(args, selected_models)
+        process_and_summarize_all(args, selected_models, config)
     pass  # for auto indentation
 
 

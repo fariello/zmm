@@ -1,0 +1,47 @@
+# summarize_zoom_transcripts.cfg — Configuration for summarize_zoom_transcripts.py
+#
+# Config file search order (first match wins):
+#   1. ./summarize_zoom_transcripts.cfg          (current working directory)
+#   2. <script_dir>/summarize_zoom_transcripts.cfg (alongside the .py file)
+#   3. ~/.config/summarize_zoom_transcripts.cfg   (user-level config)
+#   4. ~/.config/openai.cfg                       (legacy fallback: api_key only)
+#
+# Override with: --config /path/to/config.cfg
+#
+# Lines starting with '#' are comments. Blank lines are ignored.
+# Format: key = value
+
+# ---------------------------------------------------------------------------
+# API endpoint (OpenAI-compatible base URL).
+# Omit or leave blank to use the default OpenAI endpoint.
+#
+# Standard OpenAI (the default when omitted):
+#   base_url = https://api.openai.com/v1
+#
+# For URI's AWS Bedrock gateway:
+#   base_url = https://llmgw.its.uri.edu/v1
+base_url =
+
+# ---------------------------------------------------------------------------
+# API key (required).
+api_key = sk-your-api-key-here
+
+# ---------------------------------------------------------------------------
+# Default model when no --model flag is given on the command line.
+#
+# For URI's Bedrock gateway, use e.g.: its_direct/pt1-nova-2-lite-us
+# For OpenAI, use e.g.: o4-mini, gpt-4o, gpt-4o-mini
+#
+# If blank, falls back to "o4-mini".
+default_model =
+
+# ---------------------------------------------------------------------------
+# Temperature control.
+#
+# Set to "true" to never send a temperature parameter to the API.
+# Some models (e.g. reasoning models like o3-mini, o4-mini) reject the
+# temperature parameter. By default the script auto-detects this and retries
+# without temperature, but you can set this to skip the retry entirely.
+#
+# no_temperature = true
+no_temperature =
