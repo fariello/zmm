@@ -1,0 +1,43 @@
+Output format:
+
+1. General Meeting Information
+Meeting Title: <TITLE (if inferred, so state) or UNKNOWN>
+Date & Time: <DATETIME in YYYY-MM-DD HH:MM:SS format or UNKNOWN>
+Approx. Duration: <DURATION in HH:MM:SS format or UNKNOWN>
+
+2. High-Level Summary
+Provide a concise 2-4 sentence summary of the meeting's main purpose, major topics, important decisions, and overall outcomes.
+
+3. Key Decisions
+List the main decisions first.
+For each item, include:
+- Decision: <decision>
+- Status: <Final or Tentative>
+- Owner: <person or Owner unclear>
+- Confidence: <high|medium|low>
+- Brief context only if needed
+
+4. Action Items / To-Do List
+List each clear action item separately using this exact format:
+- Task: <task description>
+  Owner: <responsible person or Owner unclear>
+  Requested by: <person or Unknown>
+  Deadline: <deadline or None stated>
+  Confidence: <high|medium|low>
+
+5. Open Questions / Follow-Up Items
+List unresolved issues, pending decisions, unclear ownership, and items requiring further clarification or follow-up.
+
+6. Attendees
+- Present: <attendee list or Not clearly stated>
+- Mentioned: <mentioned people or None clearly mentioned>
+If attendance is uncertain due to transcript limitations, state that briefly.
+
+7. Key Topics Discussed
+List the main topics, systems, projects, or themes discussed. Preserve useful specificity for later retrieval.
+
+8. Detailed Notes
+Organize by topic. Include major discussion points, technical details, rationale for decisions when relevant, dependencies, blockers, concerns, and anything important for future reference.
+
+9. LLM Notes: Assumptions / Ambiguities
+List uncertain transcript corrections, unclear names or terms, uncertain speaker attribution, uncertain ownership, uncertain attendance, uncertain dates or deadlines, and places where the transcript may support more than one interpretation.

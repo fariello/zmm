@@ -45,3 +45,42 @@ default_model =
 #
 # no_temperature = true
 no_temperature =
+
+# ---------------------------------------------------------------------------
+# Prompt layering.
+#
+# Leave these blank to use --prompt/default.txt exactly as before.
+# Set prompt_layers and related keys to compose a system prompt from reusable
+# prompt files under zoom/prompts/. Names may be comma-separated and may refer
+# to nested prompt files without the .txt extension.
+#
+# Generic reusable prompt layers:
+#   prompt_layers = meeting_generic, output_structured_notes
+#
+# Organization/project context layers:
+#   prompt_contexts = contexts/uri
+#
+# Person-specific context layers:
+#   prompt_people = people/gabriel
+#
+# Recurring correction layers:
+#   prompt_corrections = corrections/uri
+#
+# Example URI/Gabriel layered prompt:
+#   prompt_layers = meeting_generic, output_structured_notes
+#   prompt_contexts = contexts/uri
+#   prompt_people = people/gabriel
+#   prompt_corrections = corrections/uri
+prompt_layers =
+prompt_contexts =
+prompt_people =
+prompt_corrections =
+
+# ---------------------------------------------------------------------------
+# Configurable primary person profile.
+#
+# These values add a generated prompt layer. They are useful when you want the
+# person name/aliases configurable without creating a separate prompt file.
+# They can be combined with prompt_people.
+person_name =
+person_aliases =

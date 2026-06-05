@@ -52,15 +52,20 @@ def list_available_prompts() -> list:
     Return a sorted list of prompt names available in PROMPTS_DIR.
 
     Each name corresponds to a .txt file in the prompts/ directory
-    alongside the script. The returned names have the .txt extension stripped.
+    alongside the script. Nested prompt names are returned relative to
+    PROMPTS_DIR, with the .txt extension stripped.
     """
     if not os.path.isdir(PROMPTS_DIR):
         return []
-    return sorted(
-        os.path.splitext(f)[0]
-        for f in os.listdir(PROMPTS_DIR)
-        if f.endswith(".txt")
-    )
+    names = []
+    for root, _dirs, files in os.walk(PROMPTS_DIR):
+        for filename in files:
+            if not filename.endswith(".txt"):
+                continue
+            path = os.path.join(root, filename)
+            rel = os.path.relpath(path, PROMPTS_DIR)
+            names.append(os.path.splitext(rel)[0])
+    return sorted(names)
 
 
 def load_prompt(name_or_path: str) -> str:
@@ -68,9 +73,10 @@ def load_prompt(name_or_path: str) -> str:
     Load a system prompt by name or explicit file path.
 
     Resolution rules:
-      1. If name_or_path looks like a path (starts with "/", ".", or contains
-         a path separator), treat it as a direct file path.
-      2. Otherwise look up PROMPTS_DIR/<name_or_path>.txt.
+      1. If name_or_path starts with "/" or ".", treat it as a direct path.
+      2. If name_or_path exists as a direct path, use it.
+      3. Otherwise look up PROMPTS_DIR/<name_or_path>.txt, including nested
+         names such as "contexts/uri".
 
     Args:
         name_or_path: Prompt name (e.g. "default", "interview") or a path
@@ -83,11 +89,9 @@ def load_prompt(name_or_path: str) -> str:
         SystemExit(2): If the file cannot be found or read, with an
                        actionable error message listing available prompts.
     """
-    if (
-        os.path.isabs(name_or_path)
-        or name_or_path.startswith(".")
-        or os.sep in name_or_path
-    ):
+    if os.path.isabs(name_or_path) or name_or_path.startswith("."):
+        prompt_path = name_or_path
+    elif os.path.isfile(name_or_path):
         prompt_path = name_or_path
     else:
         prompt_path = os.path.join(PROMPTS_DIR, f"{name_or_path}.txt")
@@ -108,14 +112,86 @@ def load_prompt(name_or_path: str) -> str:
         raise SystemExit(2)
 
 
-def resolve_prompt(args) -> str:
+def split_config_list(value: str | None) -> list[str]:
+    """
+    Split a comma/newline separated config value into non-empty entries.
+    """
+    if not value:
+        return []
+    entries = []
+    for part in re.split(r"[,\n]", value):
+        part = part.strip()
+        if part:
+            entries.append(part)
+    return entries
+
+
+def flatten_cli_list(values: list[str] | None) -> list[str]:
+    """
+    Flatten repeated CLI values that may themselves contain commas.
+    """
+    if not values:
+        return []
+    result = []
+    for value in values:
+        result.extend(split_config_list(value))
+    return result
+
+
+def build_person_prompt(config: dict | None, args) -> str | None:
+    """
+    Build a small person-context prompt from config/CLI values.
+    """
+    config = config or {}
+    person_name = (getattr(args, "person_name", None) or config.get("person_name") or "").strip()
+    aliases = flatten_cli_list(getattr(args, "person_alias", None)) or config.get("person_aliases", [])
+    if not person_name and not aliases:
+        return None
+
+    lines = ["Person Profile"]
+    if person_name:
+        lines.append(f"Primary person of interest: {person_name}")
+    if aliases:
+        lines.append("Aliases / transcript variants: " + ", ".join(aliases))
+    lines.extend([
+        "When extracting person-specific actions or statements, use this profile as context.",
+        "Do not attribute statements or tasks to this person unless the transcript or summary reasonably supports it.",
+    ])
+    return "\n".join(lines)
+
+
+def collect_prompt_layers(args, config: dict | None = None) -> list[str]:
+    """
+    Return prompt layer names/paths in the order they should be composed.
+    """
+    config = config or {}
+    layers = []
+    layers.extend(flatten_cli_list(getattr(args, "prompt_layer", None)))
+    layers.extend(flatten_cli_list(getattr(args, "prompt_context", None)))
+    layers.extend(flatten_cli_list(getattr(args, "prompt_person", None)))
+    layers.extend(flatten_cli_list(getattr(args, "prompt_correction", None)))
+    if layers:
+        return layers
+
+    layers.extend(config.get("prompt_layers", []))
+    layers.extend(config.get("prompt_contexts", []))
+    layers.extend(config.get("prompt_people", []))
+    layers.extend(config.get("prompt_corrections", []))
+    return layers
+
+
+def resolve_prompt(args, config: dict | None = None) -> str:
     """
     Resolve the final system prompt from CLI arguments.
 
     Resolution order:
       1. If --prompt-string is given, use that text directly.
-      2. Otherwise load the prompt named by --prompt (default: 'default').
-      3. If --add is given, append it to the resolved prompt.
+      2. Otherwise, if prompt layers are provided by CLI or config, compose
+         those layer files in order.
+      3. Otherwise load the prompt named by --prompt (default: 'default').
+      4. If person_name/person_aliases are configured, append a generated
+         person-context layer.
+      5. If --add is given, append it to the resolved prompt.
 
     A human-readable label is stored on args.prompt_label so that it can
     be recorded in summary file headers and log messages without needing
@@ -131,8 +207,21 @@ def resolve_prompt(args) -> str:
         text = args.prompt_string
         label = "<prompt-string>"
     else:
-        text = load_prompt(args.prompt)
-        label = args.prompt
+        layers = collect_prompt_layers(args, config)
+        if layers:
+            parts = []
+            for layer in layers:
+                parts.append(f"## Prompt Layer: {layer}\n\n{load_prompt(layer)}")
+            text = "\n\n".join(parts)
+            label = "layers:" + "+".join(layers)
+        else:
+            text = load_prompt(args.prompt)
+            label = args.prompt
+
+    person_prompt = build_person_prompt(config, args)
+    if person_prompt:
+        text = text + "\n\n## Prompt Layer: person/config\n\n" + person_prompt
+        label += "+person/config"
 
     if args.add:
         text = text + "\n\n" + args.add
@@ -404,6 +493,12 @@ def load_config(explicit_path: str = None) -> dict:
     default_model = raw.get("default_model", "").strip() or None
     no_temp_raw = raw.get("no_temperature", "").strip().lower()
     no_temperature = no_temp_raw in ("true", "yes", "1")
+    prompt_layers = split_config_list(raw.get("prompt_layers"))
+    prompt_contexts = split_config_list(raw.get("prompt_contexts") or raw.get("context_prompts"))
+    prompt_people = split_config_list(raw.get("prompt_people") or raw.get("person_prompts"))
+    prompt_corrections = split_config_list(raw.get("prompt_corrections") or raw.get("correction_prompts"))
+    person_name = raw.get("person_name", "").strip() or None
+    person_aliases = split_config_list(raw.get("person_aliases"))
 
     if base_url:
         info(f"🌐 Using custom API endpoint: {base_url}")
@@ -417,6 +512,12 @@ def load_config(explicit_path: str = None) -> dict:
         "base_url": base_url,
         "default_model": default_model,
         "no_temperature": no_temperature,
+        "prompt_layers": prompt_layers,
+        "prompt_contexts": prompt_contexts,
+        "prompt_people": prompt_people,
+        "prompt_corrections": prompt_corrections,
+        "person_name": person_name,
+        "person_aliases": person_aliases,
     }
 
 
@@ -975,7 +1076,7 @@ def process_and_summarize_all(args, selected_models, config):
     if config["base_url"]:
         client_kwargs["base_url"] = config["base_url"]
     client = openai.OpenAI(**client_kwargs)
-    system_prompt = resolve_prompt(args)
+    system_prompt = resolve_prompt(args, config)
     info(f"Using prompt: {args.prompt_label}")
 
     processed_count = 0
@@ -1058,7 +1159,7 @@ def process_and_summarize_from_merged(args, selected_models, config):
     if config["base_url"]:
         client_kwargs["base_url"] = config["base_url"]
     client = openai.OpenAI(**client_kwargs)
-    system_prompt = resolve_prompt(args)
+    system_prompt = resolve_prompt(args, config)
     info(f"Using prompt: {args.prompt_label}")
 
     # Discover Merged-Transcripts-YYYY directories, optionally filtered by --year.
@@ -1149,7 +1250,7 @@ def process_specific_files(args, selected_models, config):
     if config["base_url"]:
         client_kwargs["base_url"] = config["base_url"]
     client = openai.OpenAI(**client_kwargs)
-    system_prompt = resolve_prompt(args)
+    system_prompt = resolve_prompt(args, config)
     info(f"Using prompt: {args.prompt_label}")
 
     processed_count = 0
@@ -1342,6 +1443,9 @@ def parse_args():
             "  # Add extra instructions to the default prompt\n"
             "  %(prog)s --add 'Focus especially on budget and staffing decisions.' --from-merged --input-dir /zoom/output --output-dir /zoom/output\n"
             "\n"
+            "  # Compose a prompt from reusable layers\n"
+            "  %(prog)s --prompt-layer meeting_generic --prompt-layer output_structured_notes --prompt-context contexts/uri --input-dir /zoom/meetings --output-dir /zoom/output\n"
+            "\n"
             "  # List available prompts and models\n"
             "  %(prog)s --list-prompts\n"
             "  %(prog)s --list-models\n"
@@ -1410,9 +1514,24 @@ def parse_args():
                              "directory (e.g. 'default', 'v1', 'interview') or an absolute/relative "
                              "path to a .txt file. Use --list-prompts to see available names. "
                              "Ignored if --prompt-string is given. Default: 'default'.")
+    parser.add_argument("--prompt-layer", action="append", default=None, metavar="NAME_OR_PATH",
+                        help="Prompt layer to include before context/person/correction layers. "
+                             "May be repeated or comma-separated. Names resolve under prompts/, "
+                             "including nested names like 'contexts/uri'.")
+    parser.add_argument("--prompt-context", action="append", default=None, metavar="NAME_OR_PATH",
+                        help="Context prompt layer to append after base prompt layers. "
+                             "May be repeated or comma-separated.")
+    parser.add_argument("--prompt-person", action="append", default=None, metavar="NAME_OR_PATH",
+                        help="Person profile prompt layer to append. May be repeated or comma-separated.")
+    parser.add_argument("--prompt-correction", action="append", default=None, metavar="NAME_OR_PATH",
+                        help="Recurring correction prompt layer to append. May be repeated or comma-separated.")
     parser.add_argument("--prompt-string", type=str, default=None, metavar="TEXT",
                         help="Use TEXT directly as the system prompt instead of loading from a file. "
                              "Overrides --prompt. Combine with --add to append additional instructions.")
+    parser.add_argument("--person-name", type=str, default=None, metavar="NAME",
+                        help="Primary person name to add as a generated prompt layer. Overrides config person_name.")
+    parser.add_argument("--person-alias", action="append", default=None, metavar="ALIAS",
+                        help="Alias/transcript variant for --person-name. May be repeated or comma-separated.")
     parser.add_argument("--status", action="store_true",
                         help="Report the processing status of every meeting in --input-dir: "
                              "which meetings have raw caption/chat files, merged transcripts, "
