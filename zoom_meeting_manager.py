@@ -571,8 +571,15 @@ def call_model_json(cfg: Config, args: argparse.Namespace, *, model: str, messag
     client = client_for(cfg)
     try:
         response = client.chat.completions.create(model=model, messages=messages)
-        content = response.choices[0].message.content.strip()
-        return parse_json_response(content)
+        content = (response.choices[0].message.content or "").strip()
+        try:
+            return parse_json_response(content)
+        except Exception as exc:
+            diag = save_diagnostic("invalid-response", label, model, content, cfg, args)
+            print_model_error(exc, model=model, operation=f"{operation} (parse JSON)", label=f"{label}; saved {diag}", cfg=cfg)
+            if getattr(args, "ignore_model_errors", False):
+                return {}
+            raise SystemExit(1)
     except Exception as exc:
         print_model_error(exc, model=model, operation=operation, label=label, cfg=cfg)
         if getattr(args, "ignore_model_errors", False):
@@ -588,6 +595,17 @@ def parse_json_response(content: str) -> dict[str, Any]:
         if m:
             return json.loads(m.group(1))
         raise
+
+
+def save_diagnostic(kind: str, label: str, model: str, content: str, cfg: Config, args: argparse.Namespace) -> Path:
+    year = parse_date_from_name(label) or str(date.today().year)
+    safe_label = slugify(Path(label).stem or label)[:120]
+    safe_model = model.replace("/", "--")
+    diag_dir = Path(cfg.output_dir or args.output_dir or ".") / "Diagnostics" / year[:4]
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    path = diag_dir / f"{safe_label}.{safe_model}.{kind}.txt"
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 def print_model_error(exc: Exception, *, model: str, operation: str, label: str, cfg: Config) -> None:
@@ -831,6 +849,8 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     model = get_model(cfg, args, "cleanup")
     prompt = load_prompt(getattr(args, "cleanup_prompt", None) or cfg.prompts.get("cleanup") or "cleanup_transcript")
     client = client_for(cfg)
+    files = [r.merged_path for r in records if r.merged_path and Path(r.merged_path).is_file()]
+    confirm_model_operation(args, cfg, "clean", files)
     for rec in records[: args.max or None]:
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             continue
@@ -922,6 +942,8 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         records = records_from_files(args.files)
     model = get_model(cfg, args, "summary")
     prompt, prompt_label = build_prompt(cfg, args, "summary")
+    planned_sources = [choose_summary_source(r, cfg, args) for r in records]
+    confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s])
     for rec in records[: args.max or None]:
         source = choose_summary_source(rec, cfg, args)
         if not source:
@@ -1051,6 +1073,22 @@ def write_processing_json(records: list[MeetingRecord], cfg: Config, args: argpa
         print(f"Wrote {path}")
 
 
+def confirm_model_operation(args: argparse.Namespace, cfg: Config, operation: str, files: list[str]) -> None:
+    if args.dry_run:
+        return
+    total_bytes = sum(Path(f).stat().st_size for f in files if Path(f).is_file())
+    approx_tokens = total_bytes // 4
+    print(f"Model operation: {operation}; files={len(files)}; approx input tokens={approx_tokens}")
+    max_tokens = getattr(args, "max_input_tokens", None)
+    if max_tokens is not None and approx_tokens > max_tokens:
+        raise SystemExit(f"ERROR: estimated input tokens {approx_tokens} exceed --max-input-tokens {max_tokens}")
+    if getattr(args, "yes", False) or not cfg.confirm_model_calls or not sys.stdin.isatty():
+        return
+    answer = input("Proceed with model call(s)? [y/N] ").strip().lower()
+    if answer not in ("y", "yes"):
+        raise SystemExit("Cancelled.")
+
+
 def get_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
     start, end = parse_date_range(getattr(args, "date_range", None))
     input_dir = args.input_dir or cfg.input_dir
@@ -1076,6 +1114,8 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--clobber", action="store_true")
     parser.add_argument("--ignore-model-errors", action="store_true")
+    parser.add_argument("--yes", action="store_true", help="Do not prompt before model-backed operations.")
+    parser.add_argument("--max-input-tokens", type=int)
 
 
 def add_model_options(parser: argparse.ArgumentParser) -> None:
