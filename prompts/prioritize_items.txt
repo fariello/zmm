@@ -1,0 +1,18 @@
+Prioritize extracted meeting action items.
+
+Return strict JSON only:
+
+{
+  "items": [
+    {
+      "text": "action item text",
+      "priority": "high|medium|low",
+      "urgency": "high|medium|low",
+      "importance": "high|medium|low",
+      "deadline": "YYYY-MM-DD or null",
+      "reasoning_brief": "short explanation"
+    }
+  ]
+}
+
+Prioritize items with explicit deadlines, external dependencies, executive/stakeholder impact, budget/staffing implications, compliance concerns, or blockers.

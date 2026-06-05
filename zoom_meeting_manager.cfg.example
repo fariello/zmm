@@ -1,0 +1,66 @@
+# zoom_meeting_manager.cfg
+#
+# Configuration for zoom_meeting_manager.py / zmm.
+# Copy to one of:
+#   ./zoom_meeting_manager.cfg
+#   zoom/zoom_meeting_manager.cfg
+#   ~/.config/zoom_meeting_manager.cfg
+# or pass --config PATH.
+
+[paths]
+input_dir = /path/to/raw/zoom/exports
+output_dir = /path/to/meeting/output
+
+[source]
+# Currently implemented: zoom
+type = zoom
+
+[api]
+# OpenAI-compatible endpoint. Leave blank for OpenAI default.
+base_url =
+# Supports literal keys, ${VAR}, $VAR, and {env:VAR}.
+api_key = {env:OPENAI_API_KEY}
+no_temperature = false
+
+[models]
+summary = o4-mini
+cleanup =
+extraction =
+prioritization =
+validation =
+
+[prompts]
+summary = meeting_generic
+cleanup = cleanup_transcript
+extraction = extract_items
+prioritization = prioritize_items
+
+[prompt_layers]
+# Reusable prompt layers under zoom/prompts/, without .txt.
+layers = meeting_generic, output_structured_notes
+contexts =
+people =
+corrections =
+
+[user]
+default_person = me
+
+[person.me]
+display_name =
+aliases =
+speaker_regexes =
+assignment_verbs = can you, could you, please, need you to, follow up, send, review, schedule, draft, prepare, own, take, circle back
+commitment_patterns = I will, I'll, I can, I'll take, I'll follow up, I'll send, I'll review, I'll schedule, let me, I need to, I'll own
+statement_patterns = I think, I recommend, my concern, I agree, I disagree, we should, we need, the issue is, the risk is, my preference
+prompt_context =
+
+[transcripts]
+summarization_source = cleaned_if_available
+auto_clean_before_summarize = false
+
+[output]
+write_processing_json = true
+aggregate_period = auto
+include_all_model_summaries = true
+confirm_model_calls = true
+color = auto
