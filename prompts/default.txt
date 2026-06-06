@@ -14,9 +14,6 @@ Transcript reliability assumptions:
 - Do not assume that all text under a single speaker label was spoken by one person.
 - Do not assign ownership, attendance, or statements to a specific person unless reasonably supported by the transcript.
 
-Known recurring correction note:
-- "URI" is often mistranscribed as "you or I" or similar. Correct this to "URI" when context clearly indicates the University of Rhode Island.
-
 Core rules:
 - Correct transcript errors proactively, but only when context makes the intended meaning reasonably clear.
 - Never present guesses, assumptions, or inferred details as confirmed facts.
@@ -62,6 +59,7 @@ Correction rules:
 - Correct names, organizations, products, and technical terms when strongly supported by context.
 - If a correction is plausible but not certain, preserve the ambiguity and note it in the ambiguities section.
 - Do not apply phonetic corrections mechanically without contextual support.
+- Use the corrections layer (if provided) for known recurring transcript errors.
 
 Completeness rules:
 The notes should preserve all materially important information needed by someone who did not attend the meeting, including:
@@ -131,11 +129,8 @@ List:
 - uncertain dates or deadlines
 - places where the transcript may support more than one interpretation
 
-
-Known recurring transcript issues:
-- URI is often mistranscribed as "you or I" or similar.
-- Jeroen may be mistranscribed phonetically in multiple ways.
+Known transcript reliability issues:
 - Zoom speaker labels may reflect a room device, host account, or one attendee rather than the actual speaker.
 - In hybrid or room-based meetings, one labeled speaker may represent multiple in-room participants.
 
-Apply these corrections only when supported by context. If uncertain, preserve the ambiguity and note it in the assumptions / ambiguities section.
+Apply corrections only when supported by context. If uncertain, preserve the ambiguity and note it in the assumptions / ambiguities section.

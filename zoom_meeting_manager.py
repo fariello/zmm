@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-zoom_meeting_manager.py
+zoom_meeting_manager.py — zmm
 
 Inventory, report, repair, summarize, and extract useful information from
-meeting transcripts. The first source adapter supports Zoom exports produced by
-the existing summarize_zoom_transcripts.py workflow.
+meeting transcripts. The first source adapter supports Zoom exports.
 """
 
 from __future__ import annotations
+
+__version__ = "0.1.0"
 
 import argparse
 import calendar
@@ -20,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -372,15 +374,116 @@ def sha256_file(path: str | None) -> str | None:
     return h.hexdigest()
 
 
+# ----------------------------- Transcript Helpers ----------------------------- #
+
+
+def clean_filename(filename: str) -> str:
+    """Sanitize a filename: replace non-alphanumeric runs with dashes, collapse, trim."""
+    name, ext = os.path.splitext(filename)
+    name = unicodedata.normalize("NFKD", name)
+    name = re.sub(r"[^A-Za-z0-9.]+", "-", name)
+    name = re.sub(r"-+", "-", name)
+    name = name.strip("-_")
+    return name + ext
+
+
+def parse_chat_file(chat_file_path: str) -> tuple[int, list[tuple[str, str, str]]]:
+    """Parse a Zoom chat file into (line_count, [(timestamp, speaker, message)])."""
+    chat_entries: list[tuple[str, str, str]] = []
+    pattern = re.compile(
+        r'^(?:\d{4}-\d{2}-\d{2} )?'
+        r'(\d{2}:\d{2}:\d{2}) '
+        r'From (.*?) to Everyone:\s*'
+        r'(.*)'
+    )
+    current_timestamp: str | None = None
+    current_speaker: str | None = None
+    current_message = ''
+    line_no = 0
+
+    with open(chat_file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line_no += 1
+            line = line.rstrip()
+            m = pattern.match(line)
+            if m:
+                if current_timestamp:
+                    chat_entries.append((current_timestamp, current_speaker or "", current_message.strip()))
+                current_timestamp, current_speaker, current_message = m.groups()
+            else:
+                stripped = line.strip()
+                if current_timestamp and stripped:
+                    current_message += (' ' if current_message else '') + stripped
+
+        if current_timestamp:
+            chat_entries.append((current_timestamp, current_speaker or "", current_message.strip()))
+
+    return line_no, chat_entries
+
+
+def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, str, str]]) -> str:
+    """Merge captions and chat chronologically, collapsing adjacent same-speaker lines."""
+    events: list[dict[str, str]] = []
+
+    header_only_re = re.compile(r"^\[(.+?)\]\s+(\d{2}:\d{2}:\d{2})\s*$")
+    single_line_re = re.compile(r"^\[(.+?)\]\s+(\d{2}:\d{2}:\d{2}):\s*(.*\S)?\s*$")
+
+    current_speaker: str | None = None
+    current_timestamp: str | None = None
+    current_text_parts: list[str] = []
+
+    for raw_line in caption_content.splitlines():
+        line = raw_line.rstrip()
+
+        m_single = single_line_re.match(line)
+        if m_single:
+            if current_speaker is not None and current_text_parts:
+                events.append({"timestamp": current_timestamp or "", "speaker": current_speaker, "text": " ".join(t.strip() for t in current_text_parts if t.strip()), "source": "caption"})
+                current_speaker = None
+                current_timestamp = None
+                current_text_parts = []
+            spk, ts, inline_text = m_single.groups()
+            events.append({"timestamp": ts, "speaker": spk, "text": (inline_text or "").strip(), "source": "caption"})
+            continue
+
+        m_hdr = header_only_re.match(line)
+        if m_hdr:
+            if current_speaker is not None and current_text_parts:
+                events.append({"timestamp": current_timestamp or "", "speaker": current_speaker, "text": " ".join(t.strip() for t in current_text_parts if t.strip()), "source": "caption"})
+            current_speaker, current_timestamp = m_hdr.groups()
+            current_text_parts = []
+            continue
+
+        if current_speaker is not None and line.strip():
+            current_text_parts.append(line)
+
+    if current_speaker is not None and current_text_parts:
+        events.append({"timestamp": current_timestamp or "", "speaker": current_speaker, "text": " ".join(t.strip() for t in current_text_parts if t.strip()), "source": "caption"})
+
+    for ts, speaker, msg in chat_entries:
+        events.append({"timestamp": ts, "speaker": speaker, "text": f"[IN CHAT]: {msg}", "source": "chat"})
+
+    def to_dt(ts: str) -> datetime:
+        return datetime.strptime(ts, "%H:%M:%S")
+    events.sort(key=lambda e: to_dt(e["timestamp"]))
+
+    merged_events: list[dict[str, str]] = []
+    for e in events:
+        if not merged_events:
+            merged_events.append(e)
+            continue
+        last = merged_events[-1]
+        if e["speaker"] == last["speaker"] and e["source"] == last["source"]:
+            if e["text"]:
+                last["text"] = (last["text"] + " " + e["text"]).strip()
+        else:
+            merged_events.append(e)
+
+    lines = [f'[{e["speaker"]}] {e["timestamp"]}: {e["text"].strip()}' for e in merged_events]
+    return "\n".join(lines) + "\n"
+
+
 # ----------------------------- Inventory ----------------------------- #
-
-
-def import_legacy():
-    try:
-        import summarize_zoom_transcripts as legacy
-    except Exception as exc:
-        raise SystemExit(f"ERROR: Could not import summarize_zoom_transcripts.py helpers: {exc}")
-    return legacy
 
 
 def summary_model_from_filename(path: Path, stem: str) -> str | None:
@@ -395,8 +498,7 @@ def summary_model_from_filename(path: Path, stem: str) -> str | None:
 
 
 def expected_merged_name(raw_name: str) -> str:
-    legacy = import_legacy()
-    return legacy.clean_filename(f"{raw_name} meeting_saved_closed_caption.txt")
+    return clean_filename(f"{raw_name} meeting_saved_closed_caption.txt")
 
 
 def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | None = None, end: date | None = None, match: str | None = None) -> list[MeetingRecord]:
@@ -879,7 +981,6 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
 
 def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
     records = get_records(args, cfg)
-    legacy = import_legacy()
     changed = False
     for rec in records:
         if not rec.has_raw or rec.has_merged:
@@ -891,10 +992,10 @@ def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingReco
             continue
         dir_path = Path(rec.raw_dir)
         caption_content = Path(rec.caption_path).read_text(encoding="utf-8", errors="replace") if rec.caption_path else ""
-        chat_entries = []
+        chat_entries: list[tuple[str, str, str]] = []
         if rec.chat_path:
-            _line_count, chat_entries = legacy.parse_chat_file(rec.chat_path)
-        merged_body = legacy.merge_captions_and_chat(caption_content, chat_entries).strip()
+            _line_count, chat_entries = parse_chat_file(rec.chat_path)
+        merged_body = merge_captions_and_chat(caption_content, chat_entries).strip()
         if not merged_body:
             continue
         meeting_dt = rec.meeting_datetime or "Unknown"
@@ -1131,7 +1232,8 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage Zoom meeting transcripts, summaries, reports, and extraction.")
+    parser = argparse.ArgumentParser(prog="zmm", description="Manage Zoom meeting transcripts, summaries, reports, and extraction.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     add_common(parser)
     sub = parser.add_subparsers(dest="command", required=True)
 
