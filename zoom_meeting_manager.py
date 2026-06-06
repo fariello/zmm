@@ -1005,14 +1005,54 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
         render_table(["Prompt", "Role", "Path"], rows, fmt=args.format, color=color, plain=args.plain)
         return
     if args.list_object == "models":
-        cfg_api = load_config(args.config, require_api=True)
-        client = client_for(cfg_api)
+        # Load cost data from opencode.json
+        model_costs = _load_model_costs()
+        config_models = set(model_costs.keys())
+
+        # Try live API call
+        api_models: set[str] = set()
+        api_ok = False
         try:
-            models = sorted(m.id for m in client.models.list().data)
+            cfg_api = load_config(args.config, require_api=True)
+            client = client_for(cfg_api)
+            api_models = set(m.id for m in client.models.list().data)
+            api_ok = True
+        except SystemExit:
+            pass
         except Exception as exc:
-            print_model_error(exc, model="(list models)", operation="list models", label="models", cfg=cfg_api)
+            print(f"  \033[33m! API unreachable: {type(exc).__name__}: {exc}\033[0m", file=sys.stderr)
+
+        def _cost_str(model_id: str, direction: str) -> str:
+            cost = model_costs.get(model_id, {})
+            val = cost.get(direction)
+            return f"${val:.2f}" if val else ""
+
+        # Models from API
+        if api_models:
+            api_only = sorted(api_models - config_models)
+            both = sorted(api_models & config_models)
+            rows_both = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in both]
+            rows_api = [[m, "", ""] for m in api_only]
+            if rows_both:
+                print(f"\n  \033[1mAPI models (with pricing from opencode.json):\033[0m\n")
+                render_table(["Model", "Cost(in)", "Cost(out)"], rows_both, fmt=args.format, color=color, plain=args.plain)
+            if rows_api:
+                print(f"\n  \033[1mAPI models (no pricing info):\033[0m\n")
+                render_table(["Model", "Cost(in)", "Cost(out)"], rows_api, fmt=args.format, color=color, plain=args.plain)
+        elif not api_ok:
+            print(f"  \033[33m! Could not reach API. Showing models from opencode.json only.\033[0m\n", file=sys.stderr)
+
+        # Models in opencode.json but NOT returned by API
+        config_only = sorted(config_models - api_models)
+        if config_only:
+            rows_config = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in config_only]
+            label = "Config-only models (in opencode.json but not returned by API — may be deprecated or misconfigured):" if api_ok else "Models from opencode.json:"
+            print(f"\n  \033[1m{label}\033[0m\n")
+            render_table(["Model", "Cost(in)", "Cost(out)"], rows_config, fmt=args.format, color=color, plain=args.plain)
+
+        if not api_models and not config_models:
+            print("No models found. Check API credentials and opencode.json.", file=sys.stderr)
             raise SystemExit(1)
-        render_table(["Model"], [[m] for m in models], fmt=args.format, color=color, plain=args.plain)
         return
     records = get_records(args, cfg)
     if args.list_object == "missing":
