@@ -25,7 +25,7 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 try:
     import openai
@@ -1084,7 +1084,20 @@ def client_for(cfg: Config):
     return openai.OpenAI(**kwargs)
 
 
-def call_model_json(cfg: Config, args: argparse.Namespace, *, model: str, messages: list[dict[str, str]], operation: str, label: str) -> dict[str, Any]:
+def chat_messages(system: str, user: str) -> Any:
+    """Build an OpenAI chat-completions message list.
+
+    Cast to Any at this single boundary so the openai SDK's strict
+    ChatCompletionMessageParam typing doesn't propagate plain-dict noise
+    throughout the codebase. Shapes are correct at runtime.
+    """
+    return cast(Any, [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ])
+
+
+def call_model_json(cfg: Config, args: argparse.Namespace, *, model: str, messages: Any, operation: str, label: str) -> dict[str, Any]:
     client = client_for(cfg)
     try:
         response = client.chat.completions.create(model=model, messages=messages)
@@ -2150,7 +2163,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             continue
         text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
         try:
-            response = client.chat.completions.create(model=model, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}])
+            response = client.chat.completions.create(model=model, messages=chat_messages(prompt, text))
             cleaned = response.choices[0].message.content or ""
         except Exception as exc:
             print_model_error(exc, model=model, operation="clean transcript", label=rec.merged_path, cfg=cfg)
@@ -2356,7 +2369,7 @@ def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace
             continue
         text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
         try:
-            response = client.chat.completions.create(model=cleanup_model, messages=[{"role": "system", "content": full_prompt}, {"role": "user", "content": text}])
+            response = client.chat.completions.create(model=cleanup_model, messages=chat_messages(full_prompt, text))
             cleaned = response.choices[0].message.content or ""
         except Exception as exc:
             print_model_error(exc, model=cleanup_model, operation="auto-clean", label=rec.merged_path, cfg=cfg)
@@ -2416,7 +2429,7 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         is_cleaned = any(source == cp for cp in rec.cleaned_paths)
         prompt, prompt_label = build_prompt(cfg, args, "summary", skip_corrections=is_cleaned)
         text = Path(source).read_text(encoding="utf-8", errors="replace")
-        data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}])
+        data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=chat_messages(prompt, text))
         if not data:
             n_failed += 1
             if journal:
