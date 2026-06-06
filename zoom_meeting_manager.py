@@ -153,6 +153,23 @@ def warn_mark(color: bool) -> str:
     return colorize(WARN, "yellow", color)
 
 
+def _truncate_titles(headers: list[str], rows: list[list[Any]], max_title: int = 80) -> list[list[Any]]:
+    """Truncate 'Title' column values to max_title characters."""
+    try:
+        idx = [h.lower() for h in headers].index("title")
+    except ValueError:
+        return rows
+    result = []
+    for row in rows:
+        row = list(row)
+        if idx < len(row):
+            val = str(row[idx])
+            if len(val) > max_title:
+                row[idx] = val[:max_title - 1] + "…"
+        result.append(row)
+    return result
+
+
 def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: bool, plain: bool = False) -> None:
     if fmt == "json":
         print(json.dumps([dict(zip(headers, row)) for row in rows], indent=2, ensure_ascii=False))
@@ -163,14 +180,22 @@ def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: 
         writer.writerows(rows)
         return
 
+    # Truncate long titles for table display
+    rows = _truncate_titles(headers, rows)
+
     if not plain and shutil.which("vistab"):
         try:
             import io
+            # Determine terminal width for vistab
+            try:
+                term_width = os.get_terminal_size().columns - 1
+            except OSError:
+                term_width = 120
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(headers)
             writer.writerows(rows)
-            subprocess.run(["vistab"], input=buf.getvalue(), text=True, check=True)
+            subprocess.run(["vistab", "-w", str(term_width)], input=buf.getvalue(), text=True, check=True)
             return
         except Exception:
             pass
