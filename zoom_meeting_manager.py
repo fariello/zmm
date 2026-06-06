@@ -1085,15 +1085,25 @@ def get_model(cfg: Config, args: argparse.Namespace, task: str) -> str:
     return explicit or cfg.models.get(task) or cfg.models.get("summary") or "o4-mini"
 
 
+def _make_client(api_key: str, base_url: str | None):
+    """Construct an OpenAI client with the standard timeout. Returns None if the
+    openai package is unavailable. Single place that builds a client."""
+    if openai is None:
+        return None
+    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": DEFAULT_API_TIMEOUT}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return openai.OpenAI(**kwargs)
+
+
 def client_for(cfg: Config):
     if openai is None:
         raise SystemExit("ERROR: openai package is not installed; model-backed commands cannot run.")
     if not cfg.api_key:
         raise SystemExit("ERROR: Missing API key. Configure [api] api_key or legacy api_key.")
-    kwargs: dict[str, Any] = {"api_key": cfg.api_key, "timeout": DEFAULT_API_TIMEOUT}
-    if cfg.base_url:
-        kwargs["base_url"] = cfg.base_url
-    return openai.OpenAI(**kwargs)
+    client = _make_client(cfg.api_key, cfg.base_url)
+    assert client is not None  # openai is not None here, so _make_client returns a client
+    return client
 
 
 def chat_messages(system: str, user: str) -> Any:
@@ -1107,6 +1117,26 @@ def chat_messages(system: str, user: str) -> Any:
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ])
+
+
+def call_model_text(cfg: Config, args: argparse.Namespace, *, client: Any = None, model: str,
+                    messages: Any, operation: str, label: str) -> str | None:
+    """Call the chat-completions API and return the raw text content.
+
+    Shared by transcript cleaning (and any non-JSON model task). On error,
+    prints an actionable, secret-scrubbed message; returns None when
+    --ignore-model-errors is set, otherwise exits non-zero. Pass an existing
+    `client` to reuse it across a batch.
+    """
+    client = client or client_for(cfg)
+    try:
+        response = client.chat.completions.create(model=model, messages=messages)
+        return response.choices[0].message.content or ""
+    except Exception as exc:
+        print_model_error(exc, model=model, operation=operation, label=label, cfg=cfg)
+        if getattr(args, "ignore_model_errors", False):
+            return None
+        raise SystemExit(1)
 
 
 def call_model_json(cfg: Config, args: argparse.Namespace, *, model: str, messages: Any, operation: str, label: str) -> dict[str, Any]:
@@ -1269,10 +1299,8 @@ def _cmd_list_models(args: argparse.Namespace, cfg: Config, color: bool, provide
         api_ok = False
         if api_key and openai is not None:
             try:
-                kwargs: dict[str, Any] = {"api_key": api_key, "timeout": DEFAULT_API_TIMEOUT}
-                if base_url:
-                    kwargs["base_url"] = base_url
-                client = openai.OpenAI(**kwargs)
+                client = _make_client(api_key, base_url)
+                assert client is not None
                 api_models = set(m.id for m in client.models.list().data)
                 api_ok = True
             except Exception as exc:
@@ -1312,6 +1340,35 @@ def _cmd_list_models(args: argparse.Namespace, cfg: Config, color: bool, provide
     if not any_output:
         print("No models found. Check opencode.json and API credentials.", file=sys.stderr)
         raise SystemExit(1)
+
+
+def cmd_paths(args: argparse.Namespace, cfg: Config) -> None:
+    """Print file paths for matching meetings, one per line (pipe-friendly).
+
+    `--kind` selects which artifact to print: raw (caption file), merged,
+    cleaned (latest), summary (.txt), summary-json, or all.
+    """
+    records = get_records(args, cfg)
+    kind = getattr(args, "kind", None) or "merged"
+    limit = getattr(args, "max", None) or None
+    printed = 0
+    for rec in records[:limit]:
+        paths: list[str] = []
+        if kind in ("raw", "all") and rec.caption_path:
+            paths.append(rec.caption_path)
+        if kind in ("merged", "all") and rec.merged_path:
+            paths.append(rec.merged_path)
+        if kind in ("cleaned", "all") and rec.cleaned_paths:
+            paths.append(rec.cleaned_paths[-1])
+        if kind in ("summary", "all"):
+            paths.extend(s.path for s in rec.summaries)
+        if kind in ("summary-json", "all"):
+            paths.extend(s.json_path for s in rec.summaries if s.json_path)
+        for p in paths:
+            print(p)
+            printed += 1
+    if printed == 0:
+        print("No matching paths found.", file=sys.stderr)
 
 
 def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
@@ -1492,10 +1549,9 @@ def _list_models_live(base_url: str | None, api_key: str | None) -> list[str] | 
     if not api_key or openai is None:
         return None
     try:
-        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": DEFAULT_API_TIMEOUT}
-        if base_url:
-            kwargs["base_url"] = base_url
-        client = openai.OpenAI(**kwargs)
+        client = _make_client(api_key, base_url)
+        if client is None:
+            return None
         return sorted(m.id for m in client.models.list().data)
     except Exception:
         return None
@@ -2181,17 +2237,14 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             continue
         text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
         print(f"[{idx}/{total}] Cleaning {rec.title} with {model}...", flush=True)
-        try:
-            response = client.chat.completions.create(model=model, messages=chat_messages(prompt, text))
-            cleaned = response.choices[0].message.content or ""
-        except Exception as exc:
-            print_model_error(exc, model=model, operation="clean transcript", label=rec.merged_path, cfg=cfg)
+        cleaned = call_model_text(cfg, args, client=client, model=model,
+                                  messages=chat_messages(prompt, text),
+                                  operation="clean transcript", label=rec.merged_path)
+        if cleaned is None:  # error, ignore-model-errors set
             n_failed += 1
             if journal:
                 journal.mark(rec.merged_path, "failed")
-            if args.ignore_model_errors:
-                continue
-            raise SystemExit(1)
+            continue
         atomic_write_text(out_path, cleaned.strip() + "\n")
         print(f"Wrote {out_path}")
         n_done += 1
@@ -2407,14 +2460,11 @@ def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace
             rec.cleaned_paths.append(str(out_path))
             continue
         text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
-        try:
-            response = client.chat.completions.create(model=cleanup_model, messages=chat_messages(full_prompt, text))
-            cleaned = response.choices[0].message.content or ""
-        except Exception as exc:
-            print_model_error(exc, model=cleanup_model, operation="auto-clean", label=rec.merged_path, cfg=cfg)
-            if args.ignore_model_errors:
-                continue
-            raise SystemExit(1)
+        cleaned = call_model_text(cfg, args, client=client, model=cleanup_model,
+                                  messages=chat_messages(full_prompt, text),
+                                  operation="auto-clean", label=rec.merged_path)
+        if cleaned is None:  # error, ignore-model-errors set
+            continue
         atomic_write_text(out_path, cleaned.strip() + "\n")
         rec.cleaned_paths.append(str(out_path))
         print(f"  Wrote {out_path}")
@@ -3013,6 +3063,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_person.add_argument("kind", choices=("actions", "statements", "items"))
     p_person.add_argument("--person", required=True)
     p_person.set_defaults(func=cmd_extract, extract_object="person")
+
+    p_paths = sub.add_parser("paths", help="Print artifact file paths (pipe-friendly)")
+    add_common(p_paths)
+    p_paths.add_argument("--kind", choices=("raw", "merged", "cleaned", "summary", "summary-json", "all"),
+                         default="merged", help="Which artifact path(s) to print (default: merged).")
+    p_paths.set_defaults(func=cmd_paths)
 
     p_sum = sub.add_parser("summarize", help="Summarize transcripts with an LLM")
     sum_sub = p_sum.add_subparsers(dest="summarize_object", required=True, parser_class=_SubcommandParser)

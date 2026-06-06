@@ -184,6 +184,7 @@ Every compound command also accepts `help` (e.g. `zmm list help`).
 
 | Command | Description |
 |---------|-------------|
+| `zmm paths [--kind raw\|merged\|cleaned\|summary\|summary-json\|all]` | Print artifact file paths, one per line (pipe-friendly) |
 | `zmm export aggregates [--period auto\|year\|month]` | Write rollup files |
 | `zmm delete raw` | Move processed raw dirs to `to-delete/` |
 | `zmm init config` | Generate a starter config file (interactive wizard) |

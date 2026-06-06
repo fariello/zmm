@@ -6,6 +6,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Part-5 follow-ups
+- New `zmm paths [--kind ...]` command: print artifact file paths one per line
+  for piping into other tools (P5-F2).
+- Internal: consolidated model-call and client construction. `cmd_clean` and
+  auto-clean now use a shared `call_model_text` helper; all clients are built
+  by a single `_make_client` (P5-M1). No behavior change.
+- Tracked the package-split refactor (P5-M2) in TODO.md.
+
 ### Usability & features (Part-5 audit)
 - New `zmm merge raw` command: merge raw caption+chat into transcripts locally
   without calling a model (previously only reachable via paid `summarize raw`).

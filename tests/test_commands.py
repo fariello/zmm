@@ -448,3 +448,76 @@ def test_summarize_shows_progress(tmp_path, fake_client, capsys):
     zmm.cmd_summarize(args, cfg)
     out = capsys.readouterr().out
     assert "[1/1] Summarizing" in out
+
+
+# ----------------------------- P5-F2: paths command ----------------------------- #
+
+def test_cmd_paths_merged(tmp_path, capsys):
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), kind="merged")
+    zmm.cmd_paths(args, cfg)
+    out = capsys.readouterr().out
+    assert "Merged-Transcripts-2026" in out
+    assert out.strip().endswith(".txt")
+
+
+def test_cmd_paths_summary(tmp_path, capsys):
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True, with_summary=True)
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), kind="summary")
+    zmm.cmd_paths(args, cfg)
+    out = capsys.readouterr().out
+    assert ".summary.txt" in out
+
+
+def test_cmd_paths_all_lists_multiple(tmp_path, capsys):
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=True, with_merged=True, with_summary=True)
+    cfg = zmm.Config(input_dir=str(tmp_path / "input"), output_dir=str(output_dir))
+    args = _ns(input_dir=str(tmp_path / "input"), output_dir=str(output_dir), kind="all")
+    zmm.cmd_paths(args, cfg)
+    out = capsys.readouterr().out
+    # raw caption + merged + summary all present
+    assert "meeting_saved_closed_caption.txt" in out
+    assert "Merged-Transcripts-2026" in out
+    assert ".summary.txt" in out
+
+
+def test_cmd_paths_empty_notice(tmp_path, capsys):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), kind="merged")
+    zmm.cmd_paths(args, cfg)
+    err = capsys.readouterr().err
+    assert "No matching paths" in err
+
+
+# ----------------------------- P5-M1: call_model_text helper ----------------------------- #
+
+def test_call_model_text_returns_content(fake_client):
+    import argparse
+    client = fake_client("cleaned body")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=False)
+    out = zmm.call_model_text(cfg, args, client=client, model="m",
+                              messages=zmm.chat_messages("sys", "usr"),
+                              operation="clean", label="x")
+    assert out == "cleaned body"
+
+
+def test_call_model_text_ignore_errors_returns_none(monkeypatch):
+    import argparse
+
+    class Boom:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    raise RuntimeError("api down")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=True)
+    out = zmm.call_model_text(cfg, args, client=Boom(), model="m",
+                              messages=zmm.chat_messages("s", "u"),
+                              operation="clean", label="x")
+    assert out is None
