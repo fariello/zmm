@@ -1406,6 +1406,17 @@ def cmd_paths(args: argparse.Namespace, cfg: Config) -> None:
         print("No matching paths found.", file=sys.stderr)
 
 
+def _print_count(args: argparse.Namespace, shown: int, total: int, what: str) -> None:
+    """Print a trailing count line for table output (skipped for json/csv)."""
+    if getattr(args, "format", "table") != "table":
+        return
+    label = f" {what}".rstrip()
+    if shown == total:
+        print(f"\n{total} meeting(s){label}.")
+    else:
+        print(f"\n{shown} of {total} meeting(s){label} (limited by --max).")
+
+
 def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     color = supports_color(args.color or cfg.color)
     if args.list_object == "prompts":
@@ -1433,13 +1444,25 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     limit = getattr(args, "max", None) or None
     if args.list_object == "missing":
         kind = args.missing_kind or "all"
-        records = filter_missing(records, kind)
-        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color,
+        if kind == "summaries":
+            # Use the SAME selector that `fix missing summaries` uses, so the
+            # listed set matches exactly what would be summarized for the
+            # configured/effective summary model. (Otherwise counts drift.)
+            model = get_model(cfg, args, "summary")
+            to_process, _ = select_summarizable(records, args, cfg, model)
+            records = [rec for rec, _ in to_process]
+        else:
+            records = filter_missing(records, kind)
+        shown = records[:limit]
+        render_table(OVERVIEW_HEADERS, rows_overview(shown, color), fmt=args.format, color=color,
                      plain=args.plain, empty_notice=f"No meetings with missing {kind} found.")
+        _print_count(args, len(shown), len(records), f"with missing {kind}")
         return
     if args.list_object == "meetings":
-        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color,
+        shown = records[:limit]
+        render_table(OVERVIEW_HEADERS, rows_overview(shown, color), fmt=args.format, color=color,
                      plain=args.plain, empty_notice="No meetings found. Check --input-dir / --output-dir.")
+        _print_count(args, len(shown), len(records), "")
         return
 
 
@@ -2513,46 +2536,43 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         records = get_records(args, cfg)
     if args.summarize_object == "files":
         records = records_from_files(args.files)
-    # Apply --max up front so merge/auto-clean/summarize all operate on the
-    # same bounded set (avoids paying for cleanup on records we won't summarize).
-    if args.max:
-        records = records[: args.max]
-    # Auto-clean before summarizing if configured
-    if cfg.auto_clean_before_summarize:
-        records = _auto_clean_if_needed(records, args, cfg)
     model = get_model(cfg, args, "summary")
-    planned_sources = [choose_summary_source(r, cfg, args) for r in records]
-    confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s], model)
+    output = resolve_output_dir(args, cfg, required=False)
+
+    # Select records that actually need summarizing — the SAME selector that
+    # `list missing-summaries` uses, so counts/estimates cannot drift.
+    to_process, n_skipped = select_summarizable(records, args, cfg, model)
+
+    # --max bounds the actual work (and the auto-clean that precedes it).
+    if args.max:
+        to_process = to_process[: args.max]
+
+    # Auto-clean (if configured) only the records we will summarize, then
+    # re-resolve sources (a freshly-cleaned transcript may change the source).
+    if cfg.auto_clean_before_summarize:
+        _auto_clean_if_needed([r for r, _ in to_process], args, cfg)
+        to_process = [(r, choose_summary_source(r, cfg, args)) for r, _ in to_process]
+        to_process = [(r, s) for r, s in to_process if s]
+
     # Group by source type (cleaned vs merged) so the system prompt stays
     # stable across consecutive calls — maximizes provider prefix caching,
     # since corrections.txt is included for merged but skipped for cleaned.
-    def _is_cleaned(rec: MeetingRecord) -> bool:
-        s = choose_summary_source(rec, cfg, args)
-        return bool(s) and any(s == cp for cp in rec.cleaned_paths)
-    records = sorted(records, key=_is_cleaned)
-    output = resolve_output_dir(args, cfg, required=False)
-    resume_done = load_resume_done(output, "summarize") if getattr(args, "resume", False) else set()
-    journal = None if args.dry_run else RunJournal(output, "summarize")
-    n_done = n_skipped = n_failed = 0
-    total = len(records)
-    for idx, rec in enumerate(records, start=1):
-        source = choose_summary_source(rec, cfg, args)
-        if not source:
-            n_skipped += 1
-            continue
-        # Resume: skip sources completed in a prior interrupted run
-        if source in resume_done:
-            print(f"Resume: skipping already-completed {rec.title}")
-            n_skipped += 1
-            continue
-        # Skip if a summary for this model already exists, unless --clobber
-        if not args.clobber and summary_exists(rec, source, model, cfg):
-            print(f"Skipping existing summary: {rec.title} [{model}] (use --clobber to overwrite)")
-            n_skipped += 1
-            continue
-        if args.dry_run:
+    def _is_cleaned_source(source: str, rec: MeetingRecord) -> bool:
+        return any(source == cp for cp in rec.cleaned_paths)
+    to_process.sort(key=lambda rs: _is_cleaned_source(rs[1], rs[0]))
+
+    confirm_model_operation(args, cfg, "summarize", [s for _, s in to_process], model)
+
+    if args.dry_run:
+        for _rec, source in to_process:
             print(f"Would summarize {source} with {model}")
-            continue
+        print(f"\nDry run: {len(to_process)} would be summarized, {n_skipped} skipped.")
+        return
+
+    journal = RunJournal(output, "summarize")
+    n_done = n_failed = 0
+    total = len(to_process)
+    for idx, (rec, source) in enumerate(to_process, start=1):
         # Skip corrections augmentation if source is an already-cleaned transcript
         is_cleaned = any(source == cp for cp in rec.cleaned_paths)
         prompt, prompt_label = build_prompt(cfg, args, "summary", skip_corrections=is_cleaned)
@@ -2561,8 +2581,7 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=chat_messages(prompt, text))
         if not data:
             n_failed += 1
-            if journal:
-                journal.mark(source, "failed")
+            journal.mark(source, "failed")
             continue
         # Validate against the summary schema (non-fatal: warn, save diagnostic, still render)
         warnings = validate_summary_output(data, label=Path(source).name)
@@ -2572,15 +2591,13 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
             save_diagnostic("schema-warnings", source, model, "\n".join(warnings), cfg, args)
         write_summary_outputs(rec, source, data, model, prompt_label, cfg)
         n_done += 1
-        if journal:
-            journal.mark(source, "done")
-    if not args.dry_run:
-        # Keep journal only if something failed (so --resume can use it).
-        if journal and n_failed == 0:
-            journal.finish()
-        print(f"\nDone: {n_done} summarized, {n_skipped} skipped, {n_failed} failed.")
-        if n_failed:
-            print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
+        journal.mark(source, "done")
+    # Keep journal only if something failed (so --resume can use it).
+    if n_failed == 0:
+        journal.finish()
+    print(f"\nDone: {n_done} summarized, {n_skipped} skipped, {n_failed} failed.")
+    if n_failed:
+        print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
 
 
 def summary_exists(rec: MeetingRecord, source: str, model: str, cfg: Config) -> bool:
@@ -2590,6 +2607,35 @@ def summary_exists(rec: MeetingRecord, source: str, model: str, cfg: Config) -> 
     safe_model = model.replace("/", "--")
     stem = Path(source).stem
     return (out_dir / f"{stem}.{safe_model}.summary.json").is_file()
+
+
+def select_summarizable(records: list[MeetingRecord], args: argparse.Namespace,
+                        cfg: Config, model: str) -> tuple[list[tuple[MeetingRecord, str]], int]:
+    """Single source of truth for "which meetings need summarizing".
+
+    Returns (to_process, n_skipped) where to_process is a list of (record,
+    source-path) pairs for meetings that have a summarizable transcript and do
+    NOT already have a summary for `model` (unless --clobber). Resume-completed
+    sources are also excluded.
+
+    Both `summarize`/`fix missing summaries` (to do the work) and
+    `list missing-summaries` (to show the same set) call this, so their counts
+    cannot drift.
+    """
+    output = resolve_output_dir(args, cfg, required=False)
+    resume_done = load_resume_done(output, "summarize") if getattr(args, "resume", False) else set()
+    to_process: list[tuple[MeetingRecord, str]] = []
+    n_skipped = 0
+    for rec in records:
+        source = choose_summary_source(rec, cfg, args)
+        if not source or source in resume_done:
+            n_skipped += 1
+            continue
+        if not getattr(args, "clobber", False) and summary_exists(rec, source, model, cfg):
+            n_skipped += 1
+            continue
+        to_process.append((rec, source))
+    return to_process, n_skipped
 
 
 def choose_summary_source(rec: MeetingRecord, cfg: Config, args: argparse.Namespace) -> str | None:

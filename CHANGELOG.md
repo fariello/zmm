@@ -39,6 +39,15 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   meetings that already have a summary. Previously it also matched meetings
   whose summary lacked a `.summary.json` sidecar. That distinct case now has
   its own filter: `list missing-summary-json`.
+- `summarize` / `fix missing summaries` now estimate cost on the exact set of
+  meetings that will actually be summarized (skipping already-summarized ones)
+  rather than on all in-range transcripts. The token/cost estimate and the
+  `[i/N]` progress now reflect real work.
+- Introduced a single `select_summarizable()` selector shared by
+  `fix missing summaries` and `list missing-summaries`, so the listed set and
+  the processed set can no longer drift.
+- `list missing` / `list meetings` print a trailing count of matching meetings
+  (table output only).
 
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line

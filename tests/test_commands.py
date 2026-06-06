@@ -533,3 +533,63 @@ def test_client_for_missing_openai_actionable(monkeypatch):
     msg = str(exc.value)
     assert "openai" in msg
     assert "pip install" in msg  # tells the user how to fix it
+
+
+# ----------------------------- selector consistency (list == fix) ----------------------------- #
+
+def _two_meeting_mixed_tree(tmp_path, model="gpt-4o"):
+    """Build an output dir with TWO 2026 meetings: one already summarized, one not."""
+    output_dir = tmp_path / "output"
+    md = output_dir / "Merged-Transcripts-2026"
+    md.mkdir(parents=True)
+    safe = model.replace("/", "--")
+    # Meeting A: merged + summary (should NOT need summarizing)
+    stemA = "2026-01-10-09.00.00-Has-Summary-meeting-saved-closed-caption"
+    (md / f"{stemA}.txt").write_text("[A] 10:00:00: a\n")
+    sd = output_dir / "Summaries-2026"
+    sd.mkdir(parents=True)
+    (sd / f"{stemA}.{safe}.summary.json").write_text("{}")
+    (sd / f"{stemA}.{safe}.summary.txt").write_text("done")
+    # Meeting B: merged only (SHOULD need summarizing)
+    stemB = "2026-02-20-09.00.00-Needs-Summary-meeting-saved-closed-caption"
+    (md / f"{stemB}.txt").write_text("[A] 10:00:00: b\n")
+    return output_dir
+
+
+def test_select_summarizable_excludes_already_summarized(tmp_path):
+    output_dir = _two_meeting_mixed_tree(tmp_path)
+    cfg = zmm.Config(output_dir=str(output_dir))
+    cfg.models["summary"] = "gpt-4o"
+    args = _ns(output_dir=str(output_dir), summarization_source="merged")
+    records = zmm.get_records(args, cfg)
+    to_process, n_skipped = zmm.select_summarizable(records, args, cfg, "gpt-4o")
+    titles = sorted(r.title for r, _ in to_process)
+    assert titles == ["Needs Summary"]
+    assert n_skipped == 1  # the already-summarized one
+
+
+def test_list_missing_summaries_matches_fix_selection(tmp_path):
+    output_dir = _two_meeting_mixed_tree(tmp_path)
+    cfg = zmm.Config(output_dir=str(output_dir))
+    cfg.models["summary"] = "gpt-4o"
+    args = _ns(output_dir=str(output_dir), summarization_source="merged")
+    records = zmm.get_records(args, cfg)
+    # What 'fix' would process:
+    fix_set, _ = zmm.select_summarizable(records, args, cfg, "gpt-4o")
+    fix_titles = sorted(r.title for r, _ in fix_set)
+    # What 'list missing-summaries' shows (same selector path):
+    model = zmm.get_model(cfg, args, "summary")
+    list_set, _ = zmm.select_summarizable(records, args, cfg, model)
+    list_titles = sorted(r.title for r, _ in list_set)
+    assert fix_titles == list_titles == ["Needs Summary"]
+
+
+def test_select_summarizable_clobber_includes_all(tmp_path):
+    output_dir = _two_meeting_mixed_tree(tmp_path)
+    cfg = zmm.Config(output_dir=str(output_dir))
+    cfg.models["summary"] = "gpt-4o"
+    args = _ns(output_dir=str(output_dir), summarization_source="merged", clobber=True)
+    records = zmm.get_records(args, cfg)
+    to_process, n_skipped = zmm.select_summarizable(records, args, cfg, "gpt-4o")
+    assert len(to_process) == 2  # clobber re-does the summarized one too
+    assert n_skipped == 0
