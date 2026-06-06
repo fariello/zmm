@@ -105,10 +105,7 @@ class Config:
     no_temperature: bool = False
     models: dict[str, str] = field(default_factory=dict)
     prompts: dict[str, str] = field(default_factory=dict)
-    prompt_layers: list[str] = field(default_factory=list)
-    prompt_contexts: list[str] = field(default_factory=list)
-    prompt_people: list[str] = field(default_factory=list)
-    prompt_corrections: list[str] = field(default_factory=list)
+
     default_person: str | None = None
     people: dict[str, dict[str, Any]] = field(default_factory=dict)
     summarization_source: str = "cleaned_if_available"
@@ -370,11 +367,7 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
             cfg.models = {k: v for k, v in parser.items("models") if v.strip()}
         if parser.has_section("prompts"):
             cfg.prompts = {k: v for k, v in parser.items("prompts") if v.strip()}
-        if parser.has_section("prompt_layers"):
-            cfg.prompt_layers = split_list(parser.get("prompt_layers", "layers", fallback=""))
-            cfg.prompt_contexts = split_list(parser.get("prompt_layers", "contexts", fallback=""))
-            cfg.prompt_people = split_list(parser.get("prompt_layers", "people", fallback=""))
-            cfg.prompt_corrections = split_list(parser.get("prompt_layers", "corrections", fallback=""))
+
         if parser.has_section("user"):
             cfg.default_person = parser.get("user", "default_person", fallback=None) or None
         for section in parser.sections():
@@ -403,10 +396,7 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
         cfg.no_temperature = raw.get("no_temperature", "").lower() in ("true", "yes", "1")
         if raw.get("default_model"):
             cfg.models["summary"] = raw["default_model"]
-        cfg.prompt_layers = split_list(raw.get("prompt_layers"))
-        cfg.prompt_contexts = split_list(raw.get("prompt_contexts"))
-        cfg.prompt_people = split_list(raw.get("prompt_people"))
-        cfg.prompt_corrections = split_list(raw.get("prompt_corrections"))
+
         if raw.get("person_name") or raw.get("person_aliases"):
             cfg.default_person = "me"
             cfg.people["me"] = {"display_name": raw.get("person_name", "Me"), "aliases": split_list(raw.get("person_aliases"))}
@@ -1395,64 +1385,31 @@ type = zoom
 # ─── Models ──────────────────────────────────────────────────────────────────
 [models]
 
-# Each task can use a different model. Blank = fall back to "summary" model,
-# then to cheapest model in opencode.json.
-# CLI overrides: --summary-model, --cleanup-model, etc.
+# Blank = fall back to opencode.json's cheapest model.
+# CLI overrides: --summary-model, --cleanup-model
 #
-# summary:        zmm summarize, zmm fix missing summaries
-# cleanup:        zmm clean transcripts (simpler task, can use cheaper model)
-# extraction:     zmm extract with --llm-refine (future)
-# prioritization: zmm extract with --prioritize (future)
-# validation:     future consistency checks
+# summary: used by zmm summarize, zmm fix missing summaries
+#          (needs a capable model — must produce structured JSON)
+# cleanup: used by zmm clean transcripts
+#          (simpler task — can use a cheaper/faster model)
 summary = {summary_model}
 cleanup =
-extraction =
-prioritization =
-validation =
 
 
-# ─── Prompts ─────────────────────────────────────────────────────────────────
-[prompts]
-
-# Core prompt files (from bundled prompts/ directory, without .txt).
-# You rarely need to change these. Use augmentation files instead:
-#   ~/.config/zmm/prompts/myself.txt      — who you are
-#   ~/.config/zmm/prompts/work.txt        — organization context
-#   ~/.config/zmm/prompts/people.txt      — common participants
-#   ~/.config/zmm/prompts/corrections.txt — transcript error patterns
-#   ~/.config/zmm/prompts/style.txt       — style preferences
-# See: zmm show prompt
-summary = meeting_generic
-cleanup = cleanup_transcript
-extraction = extract_items
-prioritization = prioritize_items
-
-
-# ─── User Identity ───────────────────────────────────────────────────────────
+# ─── User Identity (for 'zmm extract me') ────────────────────────────────────
 [user]
 
 # Which [person.NAME] profile to use for 'zmm extract me' commands.
+# This drives the local regex search — it does NOT affect the model prompt.
+# For model context about yourself, use ~/.config/zmm/prompts/myself.txt
 default_person = me
 
 [person.me]
 
-# Your full name as it appears in meeting notes.
+# Your name and aliases are used by 'zmm extract me' to regex-search
+# transcripts for mentions of you. This is a local search, no model involved.
 display_name = {display_name}
-
-# Comma-separated name variants in transcripts (include Zoom misspellings).
 aliases = {aliases}
-
-# Regex patterns matching your speaker label (optional, for extraction).
-speaker_regexes =
-
-# Patterns near your name that indicate actions assigned TO you.
-assignment_verbs = can you, could you, please, need you to, follow up, send, review, schedule, draft, prepare, own, take, circle back
-
-# Patterns in your speech indicating actions you COMMIT to.
-commitment_patterns = I will, I'll, I can, I'll take, I'll follow up, I'll send, I'll review, I'll schedule, let me, I need to, I'll own
-
-# Patterns indicating notable statements you make.
-statement_patterns = I think, I recommend, my concern, I agree, I disagree, we should, we need, the issue is, the risk is, my preference
 
 
 # ─── Transcripts ─────────────────────────────────────────────────────────────

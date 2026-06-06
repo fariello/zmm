@@ -13,6 +13,10 @@
 #
 # All fields are optional. Blank values fall through to opencode.json or defaults.
 # Generate a starter config interactively with: zmm init config
+#
+# Docs: zmm show config    (see active configuration)
+#       zmm show prompt    (see full model directive)
+#       zmm list prompts   (see available prompts)
 
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
@@ -36,7 +40,6 @@ output_dir =
 [source]
 
 # Transcript source type. Currently only "zoom" is implemented.
-# Future options may include: generic_txt, teams, otter, vtt, srt
 type = zoom
 
 
@@ -69,102 +72,38 @@ no_temperature = false
 # ─── Models ──────────────────────────────────────────────────────────────────
 [models]
 
-# Each task can use a different model. Blank = fall back to "summary" model,
-# then to the cheapest model in opencode.json.
+# Blank = fall back to opencode.json's cheapest model.
+# CLI overrides: --summary-model, --cleanup-model
 #
-# CLI overrides: --summary-model, --cleanup-model, --extraction-model, etc.
-#
-# Tips:
-#   - Use a capable model for summary (it needs to produce structured JSON)
-#   - Cleanup can use a cheaper/faster model (simpler task)
-#   - Extraction/prioritization are not yet implemented (placeholders)
-
-# Used by: zmm summarize, zmm fix missing summaries
+# summary: used by zmm summarize, zmm fix missing summaries
+#          (needs a capable model — must produce structured JSON)
+# cleanup: used by zmm clean transcripts
+#          (simpler task — can use a cheaper/faster model)
 summary =
-
-# Used by: zmm clean transcripts
 cleanup =
 
-# Used by: zmm extract (with --llm-refine, future)
-extraction =
 
-# Used by: zmm extract (with --prioritize, future)
-prioritization =
-
-# Used by: future validation features
-validation =
-
-
-# ─── Prompts ─────────────────────────────────────────────────────────────────
-[prompts]
-
-# Core prompt file names (without .txt) from the bundled prompts/ directory.
-# You rarely need to change these — use augmentation files instead.
-# See: zmm show prompt
-summary = meeting_generic
-cleanup = cleanup_transcript
-extraction = extract_items
-prioritization = prioritize_items
-
-
-# ─── Prompt Layers (deprecated — use augmentation files instead) ─────────────
-# [prompt_layers]
-#
-# The old layer system is superseded by user augmentation files in
-# ~/.config/zmm/prompts/. See README for details.
-# These fields are still read for backward compatibility but are not
-# recommended for new configurations.
-#
-# layers =
-# contexts =
-# people =
-# corrections =
-
-
-# ─── User Identity ───────────────────────────────────────────────────────────
+# ─── User Identity (for 'zmm extract me') ────────────────────────────────────
 [user]
 
-# Which person profile to use for 'zmm extract me' commands.
-# Must match a [person.NAME] section below.
+# Which [person.NAME] profile to use for 'zmm extract me' commands.
+# This drives the local regex search — it does NOT affect the model prompt.
+# For model context about yourself, use ~/.config/zmm/prompts/myself.txt
 default_person = me
 
-
-# ─── Person Profile ──────────────────────────────────────────────────────────
 [person.me]
 
-# Your full name as it might appear in meeting notes.
+# Your name and aliases are used by 'zmm extract me' to regex-search
+# transcripts for mentions of you. This is a local search, no model involved.
 display_name =
-
-# Comma-separated name variants that refer to you in transcripts.
-# Include common Zoom misspellings.
-# Example: Gabriel, Gabriele, Gabe, G. Fariello
 aliases =
-
-# Regex patterns matching your speaker label in transcripts.
-# Example: ^Gabriel\b, ^Gabriele\b
-speaker_regexes =
-
-# Patterns used by 'zmm extract' to find actions assigned TO you.
-# These appear near your name/aliases in the transcript.
-assignment_verbs = can you, could you, please, need you to, follow up, send, review, schedule, draft, prepare, own, take, circle back
-
-# Patterns used to find actions you COMMIT to doing.
-# These appear in lines where you are the speaker.
-commitment_patterns = I will, I'll, I can, I'll take, I'll follow up, I'll send, I'll review, I'll schedule, let me, I need to, I'll own
-
-# Patterns used to find notable statements you make.
-# Used by 'zmm extract me statements'.
-statement_patterns = I think, I recommend, my concern, I agree, I disagree, we should, we need, the issue is, the risk is, my preference
-
-# Optional prompt file for person-specific context (legacy, prefer ~/.config/zmm/prompts/myself.txt)
-prompt_context =
 
 
 # ─── Transcripts ─────────────────────────────────────────────────────────────
 [transcripts]
 
 # Which transcript version to summarize when both exist:
-#   cleaned_if_available — use cleaned transcript if it exists, else merged
+#   cleaned_if_available — use cleaned transcript if it exists, else merged (default)
 #   cleaned              — prefer cleaned, skip if missing
 #   required_cleaned     — require cleaned, error if missing
 #   merged               — always use the canonical merged transcript
