@@ -2607,7 +2607,6 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             continue
         year = (rec.meeting_date or str(date.today()))[:4]
         out_dir = output / f"Cleaned-Transcripts-{year}"
-        out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{Path(rec.merged_path).stem}.{model.replace('/', '--')}.cleaned.txt"
         if out_path.exists() and not args.clobber:
             print(f"Skipping existing cleaned transcript: {out_path}")
@@ -2638,6 +2637,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             if journal:
                 journal.mark(merged_path, "failed")
             continue
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(out_path, cleaned.strip() + "\n")
         print(f"Wrote {out_path}")
         n_done += 1
