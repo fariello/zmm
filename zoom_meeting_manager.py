@@ -1534,6 +1534,58 @@ def print_file_report(path: Path, count: int) -> None:
     print(f"Wrote {path} ({count} items, {len(lines)} lines, {size} bytes)")
 
 
+def cmd_delete_raw(args: argparse.Namespace, cfg: Config) -> None:
+    """Move raw meeting directories to to-delete/ when a merged transcript exists."""
+    records = get_records(args, cfg)
+    output = Path(cfg.output_dir or args.output_dir or ".")
+    trash_dir = output / "to-delete"
+    candidates = [r for r in records if r.has_raw and r.has_merged and r.raw_dir]
+
+    if not candidates:
+        print("No raw directories eligible for deletion (all either missing merged or no raw).")
+        return
+
+    print(f"  {len(candidates)} raw directories have merged transcripts and can be removed:")
+    print()
+    for r in candidates[:args.max or len(candidates)]:
+        if args.dry_run:
+            print(f"  Would move: {r.raw_dir}")
+        else:
+            print(f"  {r.meeting_date}  {r.title}")
+    print()
+
+    if args.dry_run:
+        print(f"  Destination: {trash_dir}/")
+        return
+
+    # Confirm
+    if not getattr(args, "yes", False) and sys.stdin.isatty():
+        print(f"  Destination: {trash_dir}/")
+        answer = input("  Move these directories? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            raise SystemExit("Cancelled.")
+
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for r in candidates[:args.max or len(candidates)]:
+        src = Path(r.raw_dir)  # type: ignore[arg-type]
+        dest = trash_dir / src.name
+        if dest.exists():
+            # Append a numeric suffix to avoid collision
+            i = 1
+            while dest.exists():
+                dest = trash_dir / f"{src.name}.{i}"
+                i += 1
+        try:
+            shutil.move(str(src), str(dest))
+            moved += 1
+            print(f"  \033[32m✓\033[0m {src.name}")
+        except OSError as e:
+            print(f"  \033[33m!\033[0m {src.name}: {e}", file=sys.stderr)
+
+    print(f"\n  Moved {moved} directories to {trash_dir}/")
+
+
 def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
     model = get_model(cfg, args, "cleanup")
@@ -2033,6 +2085,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_options(p_clean_transcripts)
     p_clean_transcripts.add_argument("--cleanup-prompt")
     p_clean_transcripts.set_defaults(func=cmd_clean)
+
+    p_delete = sub.add_parser("delete")
+    delete_sub = p_delete.add_subparsers(dest="delete_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(delete_sub, p_delete)
+    p_delete_raw = delete_sub.add_parser("raw")
+    add_common(p_delete_raw)
+    p_delete_raw.set_defaults(func=cmd_delete_raw)
 
     return parser
 
