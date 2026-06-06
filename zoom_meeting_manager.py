@@ -1555,6 +1555,24 @@ def cmd_show_prompt(args: argparse.Namespace, cfg: Config) -> None:
           f"({BLUE}core{RESET}: {1 + (1 if task == 'summary' else 0)}, "
           f"{GREEN}user{RESET}: {len(aug_files)})")
 
+    # Token/cost estimate for the system prompt
+    full_prompt, _ = build_prompt(cfg, args, task)
+    prompt_chars = len(full_prompt)
+    prompt_tokens = prompt_chars // 4
+    model = get_model(cfg, args, task)
+    cost_str = _estimate_cost(prompt_tokens, model, "input")
+
+    print()
+    print(f"{BOLD}System prompt size:{RESET}")
+    print(f"  Characters:  {prompt_chars:,}")
+    print(f"  Est. tokens: {prompt_tokens:,}")
+    print(f"  Model:       {model}")
+    if cost_str:
+        print(f"  Est. cost:   {cost_str} per call (system message only)")
+    else:
+        print(f"  Est. cost:   (no pricing available for {model})")
+    print(f"{DIM}  Note: providers with prompt caching discount repeated system messages.{RESET}")
+
 
 def _load_model_costs() -> dict[str, dict[str, float]]:
     """Load per-model cost data from ~/.config/opencode/opencode.json if available."""
