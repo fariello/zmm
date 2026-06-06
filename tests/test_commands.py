@@ -593,3 +593,44 @@ def test_select_summarizable_clobber_includes_all(tmp_path):
     to_process, n_skipped = zmm.select_summarizable(records, args, cfg, "gpt-4o")
     assert len(to_process) == 2  # clobber re-does the summarized one too
     assert n_skipped == 0
+
+
+# ----------------------------- any-model vs explicit-model selection ----------------------------- #
+
+def test_select_default_skips_any_existing_model(tmp_path):
+    # A meeting summarized by o4-mini is "done" by default, even though the
+    # configured model is different.
+    output_dir = tmp_path / "output"
+    md = output_dir / "Merged-Transcripts-2026"
+    md.mkdir(parents=True)
+    stem = "2026-01-10-09.00.00-M-meeting-saved-closed-caption"
+    (md / f"{stem}.txt").write_text("[A] 10:00:00: hi\n")
+    sd = output_dir / "Summaries-2026"
+    sd.mkdir(parents=True)
+    (sd / f"{stem}.o4-mini.summary.txt").write_text("notes")  # only .txt, no .json
+    cfg = zmm.Config(output_dir=str(output_dir))
+    cfg.models["summary"] = "claude-x"
+    args = _ns(output_dir=str(output_dir), summarization_source="merged")
+    records = zmm.get_records(args, cfg)
+    to_process, n_skipped = zmm.select_summarizable(records, args, cfg, "claude-x")
+    assert to_process == []           # default: any summary counts
+    assert n_skipped == 1
+
+
+def test_select_explicit_model_backfills(tmp_path):
+    output_dir = tmp_path / "output"
+    md = output_dir / "Merged-Transcripts-2026"
+    md.mkdir(parents=True)
+    stem = "2026-01-10-09.00.00-M-meeting-saved-closed-caption"
+    (md / f"{stem}.txt").write_text("[A] 10:00:00: hi\n")
+    sd = output_dir / "Summaries-2026"
+    sd.mkdir(parents=True)
+    (sd / f"{stem}.o4-mini.summary.txt").write_text("notes")
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), summarization_source="merged",
+               summary_model="claude-x")
+    records = zmm.get_records(args, cfg)
+    # Explicit model: o4-mini summary does NOT satisfy a claude request.
+    to_process, n_skipped = zmm.select_summarizable(records, args, cfg, "claude-x")
+    assert len(to_process) == 1
+    assert n_skipped == 0

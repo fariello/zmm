@@ -360,16 +360,37 @@ def test_atomic_write_text_overwrite(tmp_path):
     assert target.read_text() == "second"
 
 
-# P2-T2: summary_exists
-def test_summary_exists(tmp_path):
+# P2-T2 / summary_exists semantics
+def test_summary_exists_model_specific_filesystem(tmp_path):
     cfg = zmm.Config(output_dir=str(tmp_path))
     rec = zmm.MeetingRecord(id="x", title="Test", meeting_date="2026-01-15")
     source = str(tmp_path / "2026-01-15-Test.txt")
     assert not zmm.summary_exists(rec, source, "gpt-4o", cfg)
     sdir = tmp_path / "Summaries-2026"
     sdir.mkdir()
-    (sdir / "2026-01-15-Test.gpt-4o.summary.json").write_text("{}")
+    # A .summary.txt (no .json sidecar) must count as existing.
+    (sdir / "2026-01-15-Test.gpt-4o.summary.txt").write_text("notes")
     assert zmm.summary_exists(rec, source, "gpt-4o", cfg)
+
+
+def test_summary_exists_any_model_via_record(tmp_path):
+    cfg = zmm.Config(output_dir=str(tmp_path))
+    rec = zmm.MeetingRecord(id="x", title="Test", meeting_date="2026-01-15")
+    source = "/m.txt"
+    # model=None asks "any summary at all?" using the record's summaries.
+    assert not zmm.summary_exists(rec, source, None, cfg)
+    rec.summaries = [zmm.SummaryRecord(path="/s.txt", model="o4-mini")]
+    assert zmm.summary_exists(rec, source, None, cfg)
+
+
+def test_summary_exists_model_specific_uses_record(tmp_path):
+    cfg = zmm.Config(output_dir=str(tmp_path))
+    rec = zmm.MeetingRecord(id="x", title="Test", meeting_date="2026-01-15")
+    rec.summaries = [zmm.SummaryRecord(path="/s.txt", model="o4-mini")]
+    source = "/m.txt"
+    # Has an o4-mini summary but not a claude one.
+    assert zmm.summary_exists(rec, source, "o4-mini", cfg)
+    assert not zmm.summary_exists(rec, source, "claude-x", cfg)
 
 
 # P2-T6: inventory dedup links raw + merged for legacy-named files

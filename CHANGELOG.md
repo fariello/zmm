@@ -46,6 +46,12 @@ hardened across correctness, security, tests, docs, usability, and packaging.
 - Introduced a single `select_summarizable()` selector shared by
   `fix missing summaries` and `list missing-summaries`, so the listed set and
   the processed set can no longer drift.
+- `summary_exists` now recognizes a `.summary.txt` (the `.json` sidecar is no
+  longer required) and, by default, treats a meeting as already-summarized if
+  it has a summary from ANY model. Pass `--summary-model`/`--model` to make the
+  check model-specific (for backfilling a new model). Previously the check
+  required a `.json` for the configured model, so legacy `.txt`-only summaries
+  were wrongly reported as missing (e.g. 445 instead of 37).
 - `list missing` / `list meetings` print a trailing count of matching meetings
   (table output only).
 

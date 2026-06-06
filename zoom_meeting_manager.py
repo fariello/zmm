@@ -2600,13 +2600,35 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
 
 
-def summary_exists(rec: MeetingRecord, source: str, model: str, cfg: Config) -> bool:
-    """Return True if a summary file for this source+model already exists."""
+def summary_exists(rec: MeetingRecord, source: str, model: str | None, cfg: Config) -> bool:
+    """Return True if a summary already exists for this meeting.
+
+    - If `model` is given, check for a summary produced by that specific model
+      (so you can backfill a newly-chosen model). A `.summary.txt` counts; the
+      `.json` sidecar is not required.
+    - If `model` is None, check whether *any* summary exists for the meeting
+      (the default "have I summarized this at all?" question).
+
+    Uses the discovered inventory (rec.summaries) as the source of truth, with a
+    filesystem fallback for the specific-model case (covers freshly written
+    files not yet re-discovered).
+    """
+    if model is None:
+        return bool(rec.summaries)
+    # Model-specific: match against discovered summaries first.
+    if any(s.model == model for s in rec.summaries):
+        return True
+    # Filesystem fallback (e.g. just-written this run, or not yet indexed).
     year = (rec.meeting_date or str(date.today()))[:4]
     out_dir = Path(cfg.output_dir or ".") / f"Summaries-{year}"
     safe_model = model.replace("/", "--")
     stem = Path(source).stem
-    return (out_dir / f"{stem}.{safe_model}.summary.json").is_file()
+    return (out_dir / f"{stem}.{safe_model}.summary.txt").is_file()
+
+
+def _explicit_model_requested(args: argparse.Namespace) -> bool:
+    """True if the user explicitly named a model on the command line."""
+    return bool(getattr(args, "summary_model", None) or getattr(args, "model", None))
 
 
 def select_summarizable(records: list[MeetingRecord], args: argparse.Namespace,
@@ -2615,8 +2637,14 @@ def select_summarizable(records: list[MeetingRecord], args: argparse.Namespace,
 
     Returns (to_process, n_skipped) where to_process is a list of (record,
     source-path) pairs for meetings that have a summarizable transcript and do
-    NOT already have a summary for `model` (unless --clobber). Resume-completed
-    sources are also excluded.
+    NOT already have a summary (unless --clobber). Resume-completed sources are
+    also excluded.
+
+    "Already summarized" semantics:
+      - By default, a meeting that has ANY summary (any model) is considered
+        done — this is the intuitive "have I summarized this?" question.
+      - If the user explicitly names a model (--summary-model / --model), only a
+        summary produced by THAT model counts, so a new model can be backfilled.
 
     Both `summarize`/`fix missing summaries` (to do the work) and
     `list missing-summaries` (to show the same set) call this, so their counts
@@ -2624,6 +2652,8 @@ def select_summarizable(records: list[MeetingRecord], args: argparse.Namespace,
     """
     output = resolve_output_dir(args, cfg, required=False)
     resume_done = load_resume_done(output, "summarize") if getattr(args, "resume", False) else set()
+    # Model-specific check only when the user explicitly chose a model.
+    check_model = model if _explicit_model_requested(args) else None
     to_process: list[tuple[MeetingRecord, str]] = []
     n_skipped = 0
     for rec in records:
@@ -2631,7 +2661,7 @@ def select_summarizable(records: list[MeetingRecord], args: argparse.Namespace,
         if not source or source in resume_done:
             n_skipped += 1
             continue
-        if not getattr(args, "clobber", False) and summary_exists(rec, source, model, cfg):
+        if not getattr(args, "clobber", False) and summary_exists(rec, source, check_model, cfg):
             n_skipped += 1
             continue
         to_process.append((rec, source))
