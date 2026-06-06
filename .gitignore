@@ -1,0 +1,16 @@
+sessions/
+__pycache__/
+*.pyc
+tmp/
+
+# Backup files
+*~
+*.bak
+*.orig
+*.swp
+
+# Emacs
+\#*\#
+.#*
+*.elc
+.dir-locals.el
