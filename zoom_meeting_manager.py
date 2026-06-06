@@ -794,52 +794,103 @@ def compute_problems(rec: MeetingRecord) -> list[str]:
 
 # ----------------------------- Prompt/Model ----------------------------- #
 
-
-def prompt_search_dirs() -> list[Path]:
-    """Return prompt directories in priority order: user > bundled."""
-    dirs = []
-    if USER_PROMPTS_DIR.is_dir():
-        dirs.append(USER_PROMPTS_DIR)
-    dirs.append(PROMPTS_DIR)
-    return dirs
+# Augmentation files in ~/.config/zmm/prompts/ are auto-appended in this order.
+# Only files that exist are included. These augment, never replace, the core prompt.
+AUGMENTATION_FILES = ["myself", "work", "people", "corrections", "style"]
 
 
 def resolve_prompt_path(name: str) -> Path | None:
-    """Find a prompt file by name, searching user dir first then bundled."""
-    # Absolute or relative path given directly
+    """Find a prompt file by name, searching bundled prompts directory."""
     path = Path(name).expanduser()
     if path.is_file():
         return path
-    # Search prompt directories in priority order
-    for d in prompt_search_dirs():
-        candidate = d / f"{name}.txt"
-        if candidate.is_file():
-            return candidate
+    candidate = PROMPTS_DIR / f"{name}.txt"
+    if candidate.is_file():
+        return candidate
     return None
 
 
 def load_prompt(name: str) -> str:
     path = resolve_prompt_path(name)
     if not path:
-        searched = ", ".join(str(d) for d in prompt_search_dirs())
-        raise SystemExit(f"ERROR: Prompt layer not found: {name}\n  Searched: {searched}")
+        raise SystemExit(f"ERROR: Prompt not found: {name}\n  Searched: {PROMPTS_DIR}")
     return path.read_text(encoding="utf-8").strip()
 
 
+def discover_augmentation_files() -> list[tuple[str, Path]]:
+    """Find active user augmentation files in ~/.config/zmm/prompts/."""
+    found: list[tuple[str, Path]] = []
+    if not USER_PROMPTS_DIR.is_dir():
+        return found
+    # Check well-known names in defined order
+    for name in AUGMENTATION_FILES:
+        path = USER_PROMPTS_DIR / f"{name}.txt"
+        if path.is_file():
+            found.append((name, path))
+    # Also pick up any other .txt files not in the well-known list (sorted)
+    for path in sorted(USER_PROMPTS_DIR.glob("*.txt")):
+        name = path.stem
+        if name not in AUGMENTATION_FILES and not name.endswith(".example"):
+            found.append((name, path))
+    return found
+
+
 def build_prompt(cfg: Config, args: argparse.Namespace, task: str = "summary") -> tuple[str, str]:
-    layers = []
-    layers.extend(getattr(args, "prompt_layer", None) or [])
-    layers.extend(getattr(args, "prompt_context", None) or [])
-    layers.extend(getattr(args, "prompt_person", None) or [])
-    layers.extend(getattr(args, "prompt_correction", None) or [])
-    if not layers:
-        layers = cfg.prompt_layers + cfg.prompt_contexts + cfg.prompt_people + cfg.prompt_corrections
-    if not layers and cfg.prompts.get(task):
-        layers = [cfg.prompts[task]]
-    if not layers:
-        layers = ["meeting_generic", "output_structured_notes"]
-    text = "\n\n".join(f"## Prompt Layer: {layer}\n\n{load_prompt(layer)}" for layer in layers)
-    return text, "layers:" + "+".join(layers)
+    """Build the full system prompt: core instructions + schema + user augmentation.
+
+    Assembly order (always):
+      1. Core task prompt (meeting_generic.txt or explicit --prompt override)
+      2. Output schema prompt (output_structured_notes.txt)
+      3. User augmentation files from ~/.config/zmm/prompts/ (auto-appended)
+
+    The only way to fully replace the core prompt is --prompt-string or
+    explicit --prompt-layer flags, which skip the default assembly.
+    """
+    # Check for explicit layer overrides (power-user escape hatch)
+    explicit_layers = []
+    explicit_layers.extend(getattr(args, "prompt_layer", None) or [])
+    explicit_layers.extend(getattr(args, "prompt_context", None) or [])
+    explicit_layers.extend(getattr(args, "prompt_person", None) or [])
+    explicit_layers.extend(getattr(args, "prompt_correction", None) or [])
+
+    if explicit_layers:
+        # Explicit layers replace the default assembly entirely
+        text = "\n\n".join(f"## {layer}\n\n{load_prompt(layer)}" for layer in explicit_layers)
+        return text, "explicit:" + "+".join(explicit_layers)
+
+    # Normal assembly: core + schema + augmentation
+    parts: list[str] = []
+    label_parts: list[str] = []
+
+    # 1. Core task prompt
+    core_name = cfg.prompts.get(task) or "meeting_generic"
+    parts.append(load_prompt(core_name))
+    label_parts.append(core_name)
+
+    # 2. Output schema (for summary tasks)
+    if task == "summary":
+        parts.append(load_prompt("output_structured_notes"))
+        label_parts.append("output_structured_notes")
+
+    # 3. User augmentation (auto-appended from ~/.config/zmm/prompts/)
+    aug_files = discover_augmentation_files()
+    for name, path in aug_files:
+        content = path.read_text(encoding="utf-8").strip()
+        if content:
+            # Strip comment lines from top for cleaner prompt
+            lines = content.splitlines()
+            non_comment = []
+            for line in lines:
+                if line.startswith("#") and not non_comment:
+                    continue  # skip leading comments
+                non_comment.append(line)
+            clean = "\n".join(non_comment).strip()
+            if clean:
+                parts.append(f"## Additional context: {name}\n\n{clean}")
+                label_parts.append(f"+{name}")
+
+    text = "\n\n".join(parts)
+    return text, "core:" + "+".join(label_parts)
 
 
 def get_model(cfg: Config, args: argparse.Namespace, task: str) -> str:
@@ -944,16 +995,21 @@ def rows_overview(records: list[MeetingRecord], color: bool) -> list[list[Any]]:
 def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     color = supports_color(args.color or cfg.color)
     if args.list_object == "prompts":
-        seen: dict[str, str] = {}  # name -> source
-        for d in prompt_search_dirs():
-            label = "user" if d == USER_PROMPTS_DIR else "bundled"
-            for p in sorted(d.rglob("*.txt")):
-                name = str(p.relative_to(d).with_suffix(""))
-                if name not in seen:
-                    seen[name] = label
-                # If user overrides bundled, first one wins (already in seen)
-        rows = [[name, source] for name, source in sorted(seen.items())]
-        render_table(["Prompt", "Source"], rows, fmt=args.format, color=color, plain=args.plain)
+        rows: list[list[Any]] = []
+        # Bundled core prompts
+        for p in sorted(PROMPTS_DIR.glob("*.txt")):
+            name = p.stem
+            rows.append([name, "core", str(p)])
+        # User augmentation files
+        for name, path in discover_augmentation_files():
+            rows.append([name, "augmentation", str(path)])
+        # Bundled examples
+        examples_dir = PROMPTS_DIR / "examples"
+        if examples_dir.is_dir():
+            for p in sorted(examples_dir.rglob("*.txt")):
+                name = str(p.relative_to(examples_dir).with_suffix(""))
+                rows.append([name, "example", str(p)])
+        render_table(["Prompt", "Role", "Path"], rows, fmt=args.format, color=color, plain=args.plain)
         return
     if args.list_object == "models":
         cfg_api = load_config(args.config, require_api=True)
@@ -1350,32 +1406,26 @@ def cmd_show(args: argparse.Namespace, cfg: Config) -> None:
     else:
         lines.append(f"  {OPENCODE_CONFIG} (not found)")
 
-    # Prompt search path
+    # Prompts
     lines.append("")
-    lines.append("Prompt search path (first match wins):")
-    for d in prompt_search_dirs():
-        count = len(list(d.rglob("*.txt"))) if d.is_dir() else 0
-        lines.append(f"  {d}  ({count} prompts)")
+    lines.append("Core prompts:")
+    core_name = cfg.prompts.get("summary") or "meeting_generic"
+    lines.append(f"  task prompt:   {core_name}  ({PROMPTS_DIR / f'{core_name}.txt'})")
+    lines.append(f"  output schema: output_structured_notes  ({PROMPTS_DIR / 'output_structured_notes.txt'})")
 
-    # Active prompt layers
+    # Augmentation
     lines.append("")
-    lines.append("Active prompt layers (for summarize):")
-    layers = cfg.prompt_layers + cfg.prompt_contexts + cfg.prompt_people + cfg.prompt_corrections
-    if not layers and cfg.prompts.get("summary"):
-        layers = [cfg.prompts["summary"]]
-    if not layers:
-        layers = ["meeting_generic", "output_structured_notes"]
-    for layer in layers:
-        path = resolve_prompt_path(layer)
-        source = "(not found)"
-        if path:
-            if USER_PROMPTS_DIR in path.parents or path == USER_PROMPTS_DIR:
-                source = "user"
-            elif PROMPTS_DIR in path.parents or path == PROMPTS_DIR:
-                source = "bundled"
-            else:
-                source = str(path)
-        lines.append(f"  {layer}  [{source}]")
+    lines.append("User augmentation (auto-appended from ~/.config/zmm/prompts/):")
+    aug_files = discover_augmentation_files()
+    if aug_files:
+        for name, path in aug_files:
+            lines.append(f"  {name}.txt")
+    else:
+        lines.append("  (none found)")
+    if not USER_PROMPTS_DIR.is_dir():
+        lines.append(f"  Directory does not exist: {USER_PROMPTS_DIR}")
+    else:
+        lines.append(f"  Directory: {USER_PROMPTS_DIR}")
 
     # API
     lines.append("")

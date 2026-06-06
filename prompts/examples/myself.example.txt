@@ -1,0 +1,21 @@
+# About me (the primary meeting participant)
+#
+# Copy this file to ~/.config/zmm/prompts/myself.txt and edit it.
+# This tells the summarization model who you are so it can better
+# attribute statements, actions, and decisions to you.
+#
+# Lines starting with # are stripped before sending to the model.
+
+Primary person of interest: Jane Smith
+Title/Role: Director of Engineering at Acme Corp
+Common transcript aliases: Jane, Jayne, J. Smith, JS
+
+When the transcript supports it, preserve:
+- Actions assigned to me
+- Actions I accept or volunteer for
+- Decisions I make or influence
+- Concerns I raise
+- Preferences I state
+- Important factual claims I make
+
+Do not attribute statements or tasks to me unless the transcript reasonably supports the attribution. If attribution is uncertain, state that clearly.

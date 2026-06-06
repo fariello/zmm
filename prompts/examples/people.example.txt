@@ -1,0 +1,18 @@
+# People context
+#
+# Copy this file to ~/.config/zmm/prompts/people.txt and edit it.
+# List people commonly referenced in your meetings so the model can
+# better identify speakers and attribute statements correctly.
+#
+# Lines starting with # are stripped before sending to the model.
+
+Common meeting participants and references:
+
+- Jane Smith: Director of Engineering. Meeting organizer for most eng syncs.
+  Aliases in transcripts: Jane, Jayne, J. Smith
+- Bob Chen: VP of Product. Often joins engineering syncs for roadmap alignment.
+  Aliases: Bob, Bobby, Robert
+- Alice Park: Platform team lead. Reports to Jane.
+- Carlos Ruiz: Data team lead. Based in Austin office (often remote).
+  Aliases: Carlos, Carl (transcription error)
+- Maria Torres: CEO. Rarely in engineering meetings; usually referenced, not present.

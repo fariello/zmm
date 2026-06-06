@@ -1,0 +1,18 @@
+# Work context
+#
+# Copy this file to ~/.config/zmm/prompts/work.txt and edit it.
+# This provides organizational context so the model can understand
+# references, acronyms, and institutional structure in your meetings.
+#
+# Lines starting with # are stripped before sending to the model.
+
+Organization: Acme Corp
+Division: Engineering
+
+Key context:
+- Acme Corp is a mid-size technology company.
+- Engineering division has 4 teams: Platform, Product, Data, and Infrastructure.
+- "The board" refers to the Acme Corp board of directors.
+- "Exec team" refers to the C-suite leadership team.
+- Q3 planning cycle runs June through August.
+- Sprint cycles are 2 weeks.

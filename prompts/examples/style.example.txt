@@ -1,0 +1,16 @@
+# Style guide (optional)
+#
+# Copy this file to ~/.config/zmm/prompts/style.txt and edit it.
+# Use this to customize how the model writes summaries — tone,
+# formatting preferences, length, level of detail, etc.
+#
+# Lines starting with # are stripped before sending to the model.
+
+Style preferences for meeting summaries:
+- Write in a professional but approachable tone.
+- Use bullet points for lists, not numbered lists.
+- Avoid em-dashes, horizontal lines, icons, or emoji.
+- Keep section headings short and descriptive.
+- Prefer specific names and details over vague references.
+- When quoting or paraphrasing, attribute to the speaker.
+- For action items, always include the owner if known.

@@ -95,13 +95,55 @@ See `zoom_meeting_manager.cfg.example` for all options.
 
 ## Prompts
 
-Prompts live in the `prompts/` directory and are composable layers:
+zmm uses a two-layer prompt system: **core prompts** (bundled) + **user augmentation** (personal).
 
-- **Generic**: `meeting_generic.txt`, `output_structured_notes.txt`
-- **Task-specific**: `cleanup_transcript.txt`, `extract_items.txt`, `prioritize_items.txt`
-- **Context**: `contexts/` — organization-specific background
-- **People**: `people/` — person profiles for extraction
-- **Corrections**: `corrections/` — known transcript error patterns
+### Core prompts (bundled, never edit these)
+
+These ship with zmm in `prompts/` and provide the base instructions:
+
+- `meeting_generic.txt` — core summarization rules
+- `output_structured_notes.txt` — JSON output schema
+- `cleanup_transcript.txt` — transcript cleaning instructions
+- `extract_items.txt` — action item extraction
+- `prioritize_items.txt` — prioritization instructions
+
+### User augmentation (personal, auto-appended)
+
+Place `.txt` files in `~/.config/zmm/prompts/` to add context that makes
+summaries better for your specific situation. These are **appended** to the
+core prompts — they never replace them.
+
+Recognized augmentation files (in order):
+
+| File | Purpose |
+|------|---------|
+| `myself.txt` | Who you are: name, aliases, title, role |
+| `work.txt` | Organization context: company, teams, acronyms |
+| `people.txt` | Common participants: names, titles, relationships |
+| `corrections.txt` | Known transcript errors to fix |
+| `style.txt` | Style preferences for summary prose (optional) |
+
+Any additional `.txt` files in that directory are also appended.
+
+See `prompts/examples/` for starter templates you can copy and customize.
+
+```bash
+# Set up your augmentation files
+cp prompts/examples/myself.example.txt ~/.config/zmm/prompts/myself.txt
+cp prompts/examples/work.example.txt ~/.config/zmm/prompts/work.txt
+# Edit them with your info, then verify:
+zmm show config
+```
+
+### Overriding (rare)
+
+To completely replace the core prompt for a specific run:
+
+```bash
+zmm summarize merged --prompt-layer my_custom_prompt
+```
+
+This skips the normal core+augmentation assembly and uses only the specified layers.
 
 ## Global Options
 

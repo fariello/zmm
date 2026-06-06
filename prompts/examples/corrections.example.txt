@@ -1,0 +1,16 @@
+# Known transcript corrections
+#
+# Copy this file to ~/.config/zmm/prompts/corrections.txt and edit it.
+# List recurring transcription errors that the model should correct
+# when context clearly supports the correction.
+#
+# Lines starting with # are stripped before sending to the model.
+
+Known recurring transcript corrections:
+- "Acme" may be mistranscribed as "acne", "hackney", or similar.
+- "Carlos" may appear as "Carl" or "Karlos" due to accent-related transcription.
+- "standup" may be transcribed as "stand up" — in engineering context, this refers to daily standup meetings.
+- Zoom speaker labels may reflect a room device, host account, or one attendee rather than the actual speaker.
+- In hybrid or room-based meetings, one labeled speaker may represent multiple in-room participants.
+
+Apply these corrections only when supported by context. If uncertain, preserve the original and note it in the assumptions / ambiguities section.
