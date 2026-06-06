@@ -985,6 +985,94 @@ def rows_overview(records: list[MeetingRecord], color: bool) -> list[list[Any]]:
     ] for r in records]
 
 
+def _load_providers_from_opencode() -> list[dict[str, Any]]:
+    """Load all providers from opencode.json with their models, URLs, and keys."""
+    oc = _load_opencode_config()
+    if not oc:
+        return []
+    result = []
+    for pname, pinfo in (oc.get("provider") or {}).items():
+        opts = pinfo.get("options") or {}
+        key_raw = opts.get("apiKey", "")
+        resolved_key = _resolve_opencode_key(key_raw) if key_raw else None
+        models = {}
+        for model_id, model_info in (pinfo.get("models") or {}).items():
+            models[model_id] = model_info.get("cost") or {}
+        result.append({
+            "id": pname,
+            "name": pinfo.get("name") or pname,
+            "base_url": opts.get("baseURL"),
+            "api_key": resolved_key,
+            "models": models,
+        })
+    return result
+
+
+def _cmd_list_models(args: argparse.Namespace, cfg: Config, color: bool, provider_filter: str | None) -> None:
+    """List models from all available providers."""
+    providers = _load_providers_from_opencode()
+    any_output = False
+
+    # Filter providers if requested
+    if provider_filter:
+        providers = [p for p in providers if provider_filter.lower() in p["id"].lower() or provider_filter.lower() in p["name"].lower()]
+        if not providers:
+            print(f"No provider matching '{provider_filter}'. Available: {', '.join(p['id'] for p in _load_providers_from_opencode())}", file=sys.stderr)
+            raise SystemExit(1)
+
+    for provider in providers:
+        pname = provider["name"]
+        base_url = provider.get("base_url")
+        api_key = provider.get("api_key")
+        config_models: dict[str, dict[str, float]] = provider.get("models", {})
+
+        # Try live API query for this provider
+        api_models: set[str] = set()
+        api_ok = False
+        if api_key and openai is not None:
+            try:
+                kwargs: dict[str, Any] = {"api_key": api_key}
+                if base_url:
+                    kwargs["base_url"] = base_url
+                client = openai.OpenAI(**kwargs)
+                api_models = set(m.id for m in client.models.list().data)
+                api_ok = True
+            except Exception as exc:
+                print(f"  \033[33m! {pname}: API unreachable ({type(exc).__name__})\033[0m", file=sys.stderr)
+
+        def _cost_str(model_id: str, direction: str) -> str:
+            cost = config_models.get(model_id, {})
+            val = cost.get(direction)
+            return f"${val:.2f}" if val else ""
+
+        if api_ok and api_models:
+            # Show API models with pricing where available
+            all_models = sorted(api_models)
+            rows = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in all_models]
+            print(f"\n  \033[1m{pname}\033[0m ({base_url or 'default endpoint'}) — {len(api_models)} models\n")
+            render_table(["Model", "Cost(in)", "Cost(out)"], rows, fmt=args.format, color=color, plain=args.plain)
+            any_output = True
+
+            # Flag config-only models (not returned by API)
+            config_only = sorted(set(config_models.keys()) - api_models)
+            if config_only:
+                rows_stale = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in config_only]
+                print(f"\n  \033[33m{pname}: config-only (not returned by API — may be deprecated):\033[0m\n")
+                render_table(["Model", "Cost(in)", "Cost(out)"], rows_stale, fmt=args.format, color=color, plain=args.plain)
+        elif config_models:
+            # No API access — show config models
+            all_models = sorted(config_models.keys())
+            rows = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in all_models]
+            suffix = " (API unreachable)" if api_key else " (no API key)"
+            print(f"\n  \033[1m{pname}\033[0m{suffix} — {len(config_models)} models from opencode.json\n")
+            render_table(["Model", "Cost(in)", "Cost(out)"], rows, fmt=args.format, color=color, plain=args.plain)
+            any_output = True
+
+    if not any_output:
+        print("No models found. Check opencode.json and API credentials.", file=sys.stderr)
+        raise SystemExit(1)
+
+
 def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     color = supports_color(args.color or cfg.color)
     if args.list_object == "prompts":
@@ -1005,54 +1093,8 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
         render_table(["Prompt", "Role", "Path"], rows, fmt=args.format, color=color, plain=args.plain)
         return
     if args.list_object == "models":
-        # Load cost data from opencode.json
-        model_costs = _load_model_costs()
-        config_models = set(model_costs.keys())
-
-        # Try live API call
-        api_models: set[str] = set()
-        api_ok = False
-        try:
-            cfg_api = load_config(args.config, require_api=True)
-            client = client_for(cfg_api)
-            api_models = set(m.id for m in client.models.list().data)
-            api_ok = True
-        except SystemExit:
-            pass
-        except Exception as exc:
-            print(f"  \033[33m! API unreachable: {type(exc).__name__}: {exc}\033[0m", file=sys.stderr)
-
-        def _cost_str(model_id: str, direction: str) -> str:
-            cost = model_costs.get(model_id, {})
-            val = cost.get(direction)
-            return f"${val:.2f}" if val else ""
-
-        # Models from API
-        if api_models:
-            api_only = sorted(api_models - config_models)
-            both = sorted(api_models & config_models)
-            rows_both = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in both]
-            rows_api = [[m, "", ""] for m in api_only]
-            if rows_both:
-                print(f"\n  \033[1mAPI models (with pricing from opencode.json):\033[0m\n")
-                render_table(["Model", "Cost(in)", "Cost(out)"], rows_both, fmt=args.format, color=color, plain=args.plain)
-            if rows_api:
-                print(f"\n  \033[1mAPI models (no pricing info):\033[0m\n")
-                render_table(["Model", "Cost(in)", "Cost(out)"], rows_api, fmt=args.format, color=color, plain=args.plain)
-        elif not api_ok:
-            print(f"  \033[33m! Could not reach API. Showing models from opencode.json only.\033[0m\n", file=sys.stderr)
-
-        # Models in opencode.json but NOT returned by API
-        config_only = sorted(config_models - api_models)
-        if config_only:
-            rows_config = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in config_only]
-            label = "Config-only models (in opencode.json but not returned by API — may be deprecated or misconfigured):" if api_ok else "Models from opencode.json:"
-            print(f"\n  \033[1m{label}\033[0m\n")
-            render_table(["Model", "Cost(in)", "Cost(out)"], rows_config, fmt=args.format, color=color, plain=args.plain)
-
-        if not api_models and not config_models:
-            print("No models found. Check API credentials and opencode.json.", file=sys.stderr)
-            raise SystemExit(1)
+        provider_filter = getattr(args, "provider", None)
+        _cmd_list_models(args, cfg, color, provider_filter)
         return
     records = get_records(args, cfg)
     if args.list_object == "missing":
@@ -2360,7 +2402,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list")
     list_sub = p_list.add_subparsers(dest="list_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(list_sub, p_list)
-    for name in ("models", "prompts", "meetings"):
+    p_models = list_sub.add_parser("models")
+    add_common(p_models)
+    p_models.add_argument("--provider", metavar="NAME",
+                          help="Filter by provider name (e.g. 'uri', 'openai', 'google').")
+    p_models.set_defaults(func=cmd_list, list_object="models")
+    for name in ("prompts", "meetings"):
         sp = list_sub.add_parser(name)
         add_common(sp)
         sp.set_defaults(func=cmd_list, list_object=name)
