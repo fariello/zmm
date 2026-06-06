@@ -1461,6 +1461,98 @@ def cmd_show(args: argparse.Namespace, cfg: Config) -> None:
     print("\n".join(lines))
 
 
+def cmd_show_prompt(args: argparse.Namespace, cfg: Config) -> None:
+    """Show the complete prompt/directive that would be sent to the model, with source annotations."""
+    task = getattr(args, "task", None) or "summary"
+    color = sys.stdout.isatty()
+
+    # ANSI codes
+    BOLD = "\033[1m" if color else ""
+    RESET = "\033[0m" if color else ""
+    BLUE = "\033[1;34m" if color else ""  # core sections
+    GREEN = "\033[1;32m" if color else ""  # user augmentation
+    CYAN = "\033[36m" if color else ""  # file paths
+    DIM = "\033[2m" if color else ""
+
+    # Check for explicit layer overrides
+    explicit_layers: list[str] = []
+    explicit_layers.extend(getattr(args, "prompt_layer", None) or [])
+    explicit_layers.extend(getattr(args, "prompt_context", None) or [])
+    explicit_layers.extend(getattr(args, "prompt_person", None) or [])
+    explicit_layers.extend(getattr(args, "prompt_correction", None) or [])
+
+    if explicit_layers:
+        print(f"{BOLD}Prompt mode:{RESET} explicit override (--prompt-layer)")
+        print(f"{DIM}{'─' * 60}{RESET}")
+        for layer in explicit_layers:
+            path = resolve_prompt_path(layer)
+            print(f"\n{BLUE}━━━ [{layer}] ━━━{RESET}")
+            print(f"{CYAN}  Source: {path}{RESET}")
+            print(f"{DIM}{'─' * 60}{RESET}")
+            print(load_prompt(layer))
+        return
+
+    # Normal assembly
+    print(f"{BOLD}Prompt assembly for task: {task}{RESET}")
+    print(f"{DIM}This is the complete directive sent to the model as the system message.{RESET}")
+    print()
+
+    # 1. Core task prompt
+    core_name = cfg.prompts.get(task) or "meeting_generic"
+    core_path = resolve_prompt_path(core_name)
+    print(f"{BLUE}━━━ CORE: {core_name} ━━━{RESET}")
+    print(f"{CYAN}  Source: {core_path}{RESET}")
+    print(f"{BLUE}  Role:   Core task instructions (bundled with zmm){RESET}")
+    print(f"{DIM}{'─' * 60}{RESET}")
+    print(load_prompt(core_name))
+    print()
+
+    # 2. Output schema
+    if task == "summary":
+        schema_path = resolve_prompt_path("output_structured_notes")
+        print(f"{BLUE}━━━ CORE: output_structured_notes ━━━{RESET}")
+        print(f"{CYAN}  Source: {schema_path}{RESET}")
+        print(f"{BLUE}  Role:   JSON output schema (bundled with zmm){RESET}")
+        print(f"{DIM}{'─' * 60}{RESET}")
+        print(load_prompt("output_structured_notes"))
+        print()
+
+    # 3. User augmentation
+    aug_files = discover_augmentation_files()
+    if aug_files:
+        for name, path in aug_files:
+            content = path.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            # Strip leading comments
+            lines = content.splitlines()
+            non_comment = []
+            for line in lines:
+                if line.startswith("#") and not non_comment:
+                    continue
+                non_comment.append(line)
+            clean = "\n".join(non_comment).strip()
+            if not clean:
+                continue
+            print(f"{GREEN}━━━ USER: {name} ━━━{RESET}")
+            print(f"{CYAN}  Source: {path}{RESET}")
+            print(f"{GREEN}  Role:   Personal augmentation (auto-appended){RESET}")
+            print(f"{DIM}{'─' * 60}{RESET}")
+            print(f"## Additional context: {name}\n")
+            print(clean)
+            print()
+    else:
+        print(f"{DIM}(No user augmentation files found in {USER_PROMPTS_DIR}){RESET}")
+        print()
+
+    # Summary
+    total_parts = 1 + (1 if task == "summary" else 0) + len(aug_files)
+    print(f"{DIM}{'─' * 60}{RESET}")
+    print(f"{BOLD}Total sections: {total_parts}{RESET}  "
+          f"({BLUE}core{RESET}: {1 + (1 if task == 'summary' else 0)}, "
+          f"{GREEN}user{RESET}: {len(aug_files)})")
+
+
 def _load_model_costs() -> dict[str, dict[str, float]]:
     """Load per-model cost data from ~/.config/opencode/opencode.json if available."""
     costs: dict[str, dict[str, float]] = {}
@@ -2196,6 +2288,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_show_cfg = show_sub.add_parser("config")
     add_common(p_show_cfg)
     p_show_cfg.set_defaults(func=cmd_show)
+    p_show_prompt = show_sub.add_parser("prompt")
+    add_common(p_show_prompt)
+    p_show_prompt.add_argument("--task", choices=("summary", "cleanup", "extraction", "prioritization"), default="summary",
+                              help="Which task's prompt to show (default: summary).")
+    p_show_prompt.set_defaults(func=cmd_show_prompt)
 
     p_est = sub.add_parser("estimate")
     est_sub = p_est.add_subparsers(dest="estimate_object", required=True, parser_class=_SubcommandParser)
