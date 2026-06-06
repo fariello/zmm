@@ -1523,7 +1523,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     prompt = load_prompt(getattr(args, "cleanup_prompt", None) or cfg.prompts.get("cleanup") or "cleanup_transcript")
     client = client_for(cfg)
     files = [r.merged_path for r in records if r.merged_path and Path(r.merged_path).is_file()]
-    confirm_model_operation(args, cfg, "clean", files)
+    confirm_model_operation(args, cfg, "clean", files, model)
     for rec in records[: args.max or None]:
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             continue
@@ -1615,7 +1615,7 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     model = get_model(cfg, args, "summary")
     prompt, prompt_label = build_prompt(cfg, args, "summary")
     planned_sources = [choose_summary_source(r, cfg, args) for r in records]
-    confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s])
+    confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s], model)
     for rec in records[: args.max or None]:
         source = choose_summary_source(rec, cfg, args)
         if not source:
@@ -1745,18 +1745,28 @@ def write_processing_json(records: list[MeetingRecord], cfg: Config, args: argpa
         print(f"Wrote {path}")
 
 
-def confirm_model_operation(args: argparse.Namespace, cfg: Config, operation: str, files: list[str]) -> None:
+def confirm_model_operation(args: argparse.Namespace, cfg: Config, operation: str, files: list[str], model: str = "") -> None:
     if args.dry_run:
         return
     total_bytes = sum(Path(f).stat().st_size for f in files if Path(f).is_file())
     approx_tokens = total_bytes // 4
-    print(f"Model operation: {operation}; files={len(files)}; approx input tokens={approx_tokens}")
+    cost_str = _estimate_cost(approx_tokens, model, "input") if model else None
+
+    print()
+    print(f"  \033[1mOperation:\033[0m  {operation}")
+    print(f"  \033[1mModel:\033[0m      {model or '(default)'}")
+    print(f"  \033[1mFiles:\033[0m      {len(files)}")
+    print(f"  \033[1mEst. tokens:\033[0m {approx_tokens:,}")
+    if cost_str:
+        print(f"  \033[1mEst. cost:\033[0m   {cost_str} (input only)")
+    print()
+
     max_tokens = getattr(args, "max_input_tokens", None)
     if max_tokens is not None and approx_tokens > max_tokens:
-        raise SystemExit(f"ERROR: estimated input tokens {approx_tokens} exceed --max-input-tokens {max_tokens}")
+        raise SystemExit(f"ERROR: estimated input tokens {approx_tokens:,} exceed --max-input-tokens {max_tokens:,}")
     if getattr(args, "yes", False) or not cfg.confirm_model_calls or not sys.stdin.isatty():
         return
-    answer = input("Proceed with model call(s)? [y/N] ").strip().lower()
+    answer = input("  Proceed? [y/N] ").strip().lower()
     if answer not in ("y", "yes"):
         raise SystemExit("Cancelled.")
 
