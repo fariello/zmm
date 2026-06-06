@@ -9,17 +9,46 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip pytest pytest-cov tiktoken
+      - name: Install package with dev extras
+        # Installing the package (not just loose deps) exercises packaging
+        # metadata, the `zmm` entry point, bundled data resolution, and the
+        # optional openai path. [dev] pulls in pytest, pytest-cov, build,
+        # jsonschema, and openai.
+        run: python -m pip install --upgrade pip && python -m pip install -e .[dev]
       - name: Compile check
         run: python -m py_compile zoom_meeting_manager.py
       - name: Run tests with coverage
         run: python -m pytest tests/ -v --cov=zoom_meeting_manager --cov-report=term-missing
+
+  build:
+    # Validate that the wheel/sdist build and install cleanly, and that the
+    # bundled data + entry point are present in the installed package.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: python -m pip install --upgrade pip build && python -m build
+      - name: Inspect wheel contents (data must be present)
+        run: python -m zipfile -l dist/*.whl
+      - name: Install the built wheel in a clean environment
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/python -m pip install dist/*.whl
+      - name: Smoke-test the installed package
+        run: |
+          /tmp/venv/bin/python -c "import zoom_meeting_manager as z; print('version', z.__version__)"
+          /tmp/venv/bin/zmm --version
+          /tmp/venv/bin/zmm --help > /dev/null
