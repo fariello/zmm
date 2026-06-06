@@ -1,66 +1,196 @@
 # zoom_meeting_manager.cfg
 #
-# Configuration for zoom_meeting_manager.py / zmm.
-# Copy to one of:
-#   ./zoom_meeting_manager.cfg
-#   zoom/zoom_meeting_manager.cfg
-#   ~/.config/zoom_meeting_manager.cfg
-# or pass --config PATH.
+# Configuration for zmm (Zoom Meeting Manager).
+#
+# zmm searches for this file in order:
+#   1. --config PATH (explicit)
+#   2. ./zoom_meeting_manager.cfg (current directory)
+#   3. <zmm install dir>/zoom_meeting_manager.cfg
+#   4. ~/.config/zoom_meeting_manager.cfg
+#
+# If no config file is found, zmm falls back to ~/.config/opencode/opencode.json
+# for API credentials and model information.
+#
+# All fields are optional. Blank values fall through to opencode.json or defaults.
+# Generate a starter config interactively with: zmm init config
 
+
+# ─── Paths ───────────────────────────────────────────────────────────────────
 [paths]
-input_dir = /path/to/raw/zoom/exports
-output_dir = /path/to/meeting/output
 
+# Where Zoom stores raw meeting recordings.
+# Each meeting is a folder like: "2026-06-04 15.29.53 Meeting Title/"
+# containing meeting_saved_closed_caption.txt and/or meeting_saved_chat.txt
+input_dir =
+
+# Where zmm writes all processed output. Creates subdirectories automatically:
+#   Merged-Transcripts-YYYY/   — merged caption+chat files
+#   Summaries-YYYY/            — LLM-generated summary .txt and .json
+#   Cleaned-Transcripts-YYYY/  — LLM-cleaned transcripts
+#   Diagnostics/YYYY/          — failed model response dumps
+#   to-delete/                 — raw dirs moved by 'zmm delete raw'
+output_dir =
+
+
+# ─── Source ──────────────────────────────────────────────────────────────────
 [source]
-# Currently implemented: zoom
+
+# Transcript source type. Currently only "zoom" is implemented.
+# Future options may include: generic_txt, teams, otter, vtt, srt
 type = zoom
 
+
+# ─── API ─────────────────────────────────────────────────────────────────────
 [api]
-# OpenAI-compatible endpoint. Leave blank for OpenAI default.
+
+# OpenAI-compatible API endpoint.
+# Leave blank to use the default OpenAI endpoint (https://api.openai.com/v1).
+# Leave this entire section blank if ~/.config/opencode/opencode.json provides
+# your API credentials — zmm will use that automatically.
+#
+# Examples:
+#   base_url = https://api.openai.com/v1
+#   base_url = https://llmgw.example.com/v1
 base_url =
-# Supports literal keys, ${VAR}, $VAR, and {env:VAR}.
-api_key = {env:OPENAI_API_KEY}
+
+# API key. Supports several formats:
+#   Literal:     sk-abc123...
+#   Env var:     {env:OPENAI_API_KEY}
+#   Shell var:   $OPENAI_API_KEY or ${OPENAI_API_KEY}
+#
+# If blank, zmm reads from ~/.config/opencode/opencode.json.
+api_key =
+
+# Some providers don't support the temperature parameter.
+# Set to true to omit it from API calls.
 no_temperature = false
 
+
+# ─── Models ──────────────────────────────────────────────────────────────────
 [models]
-summary = o4-mini
+
+# Each task can use a different model. Blank = fall back to "summary" model,
+# then to the cheapest model in opencode.json.
+#
+# CLI overrides: --summary-model, --cleanup-model, --extraction-model, etc.
+#
+# Tips:
+#   - Use a capable model for summary (it needs to produce structured JSON)
+#   - Cleanup can use a cheaper/faster model (simpler task)
+#   - Extraction/prioritization are not yet implemented (placeholders)
+
+# Used by: zmm summarize, zmm fix missing summaries
+summary =
+
+# Used by: zmm clean transcripts
 cleanup =
+
+# Used by: zmm extract (with --llm-refine, future)
 extraction =
+
+# Used by: zmm extract (with --prioritize, future)
 prioritization =
+
+# Used by: future validation features
 validation =
 
+
+# ─── Prompts ─────────────────────────────────────────────────────────────────
 [prompts]
+
+# Core prompt file names (without .txt) from the bundled prompts/ directory.
+# You rarely need to change these — use augmentation files instead.
+# See: zmm show prompt
 summary = meeting_generic
 cleanup = cleanup_transcript
 extraction = extract_items
 prioritization = prioritize_items
 
-[prompt_layers]
-# Reusable prompt layers under zoom/prompts/, without .txt.
-layers = meeting_generic, output_structured_notes
-contexts =
-people =
-corrections =
 
+# ─── Prompt Layers (deprecated — use augmentation files instead) ─────────────
+# [prompt_layers]
+#
+# The old layer system is superseded by user augmentation files in
+# ~/.config/zmm/prompts/. See README for details.
+# These fields are still read for backward compatibility but are not
+# recommended for new configurations.
+#
+# layers =
+# contexts =
+# people =
+# corrections =
+
+
+# ─── User Identity ───────────────────────────────────────────────────────────
 [user]
+
+# Which person profile to use for 'zmm extract me' commands.
+# Must match a [person.NAME] section below.
 default_person = me
 
+
+# ─── Person Profile ──────────────────────────────────────────────────────────
 [person.me]
+
+# Your full name as it might appear in meeting notes.
 display_name =
+
+# Comma-separated name variants that refer to you in transcripts.
+# Include common Zoom misspellings.
+# Example: Gabriel, Gabriele, Gabe, G. Fariello
 aliases =
+
+# Regex patterns matching your speaker label in transcripts.
+# Example: ^Gabriel\b, ^Gabriele\b
 speaker_regexes =
+
+# Patterns used by 'zmm extract' to find actions assigned TO you.
+# These appear near your name/aliases in the transcript.
 assignment_verbs = can you, could you, please, need you to, follow up, send, review, schedule, draft, prepare, own, take, circle back
+
+# Patterns used to find actions you COMMIT to doing.
+# These appear in lines where you are the speaker.
 commitment_patterns = I will, I'll, I can, I'll take, I'll follow up, I'll send, I'll review, I'll schedule, let me, I need to, I'll own
+
+# Patterns used to find notable statements you make.
+# Used by 'zmm extract me statements'.
 statement_patterns = I think, I recommend, my concern, I agree, I disagree, we should, we need, the issue is, the risk is, my preference
+
+# Optional prompt file for person-specific context (legacy, prefer ~/.config/zmm/prompts/myself.txt)
 prompt_context =
 
+
+# ─── Transcripts ─────────────────────────────────────────────────────────────
 [transcripts]
+
+# Which transcript version to summarize when both exist:
+#   cleaned_if_available — use cleaned transcript if it exists, else merged
+#   cleaned              — prefer cleaned, skip if missing
+#   required_cleaned     — require cleaned, error if missing
+#   merged               — always use the canonical merged transcript
 summarization_source = cleaned_if_available
+
+# Whether to automatically run LLM cleanup before summarizing.
+# Usually false — run 'zmm clean transcripts' separately first.
 auto_clean_before_summarize = false
 
+
+# ─── Output ──────────────────────────────────────────────────────────────────
 [output]
+
+# Write Processing-YYYY.json metadata after state-changing commands.
 write_processing_json = true
+
+# Aggregate export period: auto, year, month, range
 aggregate_period = auto
+
+# Include summaries from all models in aggregate files.
+# Set to false to only include the configured summary model.
 include_all_model_summaries = true
+
+# Prompt for confirmation before model-backed bulk operations.
+# Set to false to suppress (same as --yes).
 confirm_model_calls = true
+
+# Color mode for terminal output: auto, always, never
 color = auto
