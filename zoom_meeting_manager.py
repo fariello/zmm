@@ -1473,36 +1473,41 @@ def get_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
 # ----------------------------- Parser ----------------------------- #
 
 
-def add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", metavar="PATH",
+def add_common(parser: argparse.ArgumentParser, *, is_root: bool = False) -> None:
+    # For non-root parsers, use SUPPRESS so defaults don't overwrite values
+    # parsed by the top-level parser.
+    D = None if is_root else argparse.SUPPRESS
+    parser.add_argument("--config", metavar="PATH", default=D,
                         help="Path to zmm config file (default: auto-discovered).")
-    parser.add_argument("--input-dir", metavar="DIR",
+    parser.add_argument("--input-dir", metavar="DIR", default=D,
                         help="Directory containing raw Zoom meeting folders.")
-    parser.add_argument("--output-dir", metavar="DIR",
+    parser.add_argument("--output-dir", metavar="DIR", default=D,
                         help="Directory containing Merged-Transcripts-YYYY/, Summaries-YYYY/, etc.")
-    parser.add_argument("--date-range", metavar="RANGE",
+    parser.add_argument("--date-range", metavar="RANGE", default=D,
                         help="Filter by meeting date. Accepts: YYYY, YYYY-MM, "
                              "YYYY-MM-DD, or ranges like '2026-01 to 2026-03', "
                              "'2026-01-01..2026-01-31'.")
-    parser.add_argument("--match", metavar="TEXT",
+    parser.add_argument("--match", metavar="TEXT", default=D,
                         help="Filter meetings whose filename contains TEXT (case-insensitive substring).")
-    parser.add_argument("--max", type=int, metavar="N",
+    parser.add_argument("--max", type=int, metavar="N", default=D,
                         help="Limit the number of items processed or displayed.")
-    parser.add_argument("--format", choices=("table", "json", "csv"), default="table",
+    parser.add_argument("--format", choices=("table", "json", "csv"),
+                        default="table" if is_root else D,
                         help="Output format (default: table).")
-    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+    parser.add_argument("--color", choices=("auto", "always", "never"),
+                        default="auto" if is_root else D,
                         help="Color output mode (default: auto, uses color when stdout is a terminal).")
-    parser.add_argument("--plain", action="store_true",
+    parser.add_argument("--plain", action="store_true", default=D if not is_root else False,
                         help="Disable vistab table rendering; use plain aligned text.")
-    parser.add_argument("--dry-run", action="store_true",
+    parser.add_argument("--dry-run", action="store_true", default=D if not is_root else False,
                         help="Show what would be done without writing files or calling models.")
-    parser.add_argument("--clobber", action="store_true",
+    parser.add_argument("--clobber", action="store_true", default=D if not is_root else False,
                         help="Overwrite existing output files (summaries, cleaned transcripts, etc.).")
-    parser.add_argument("--ignore-model-errors", action="store_true",
+    parser.add_argument("--ignore-model-errors", action="store_true", default=D if not is_root else False,
                         help="Continue on model/API errors instead of exiting (warn and skip).")
-    parser.add_argument("--yes", action="store_true",
+    parser.add_argument("--yes", action="store_true", default=D if not is_root else False,
                         help="Skip confirmation prompts before model-backed bulk operations.")
-    parser.add_argument("--max-input-tokens", type=int, metavar="N",
+    parser.add_argument("--max-input-tokens", type=int, metavar="N", default=D,
                         help="Abort if estimated input tokens exceed this limit.")
 
 
@@ -1562,12 +1567,11 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = _SubcommandParser(prog="zmm", description="Manage Zoom meeting transcripts, summaries, reports, and extraction.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    add_common(parser)
+    add_common(parser, is_root=True)
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(sub, parser)
 
     p_list = sub.add_parser("list")
-    add_common(p_list)
     list_sub = p_list.add_subparsers(dest="list_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(list_sub, p_list)
     for name in ("models", "prompts", "meetings"):
@@ -1589,7 +1593,6 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(func=cmd_list, list_object="missing", missing_kind=mk)
 
     p_report = sub.add_parser("report")
-    add_common(p_report)
     report_sub = p_report.add_subparsers(dest="report_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(report_sub, p_report)
     p_status = report_sub.add_parser("status")
@@ -1606,7 +1609,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.set_defaults(func=cmd_index)
 
     p_migrate = sub.add_parser("migrate")
-    add_common(p_migrate)
     migrate_sub = p_migrate.add_subparsers(dest="migrate_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(migrate_sub, p_migrate)
     p_legacy = migrate_sub.add_parser("legacy")
@@ -1614,7 +1616,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_legacy.set_defaults(func=cmd_index)
 
     p_write = sub.add_parser("write")
-    add_common(p_write)
     write_sub = p_write.add_subparsers(dest="write_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(write_sub, p_write)
     p_write_json = write_sub.add_parser("processing-json")
@@ -1622,7 +1623,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_write_json.set_defaults(func=cmd_index)
 
     p_export = sub.add_parser("export")
-    add_common(p_export)
     export_sub = p_export.add_subparsers(dest="export_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(export_sub, p_export)
     p_agg = export_sub.add_parser("aggregates")
@@ -1639,7 +1639,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_cfg.set_defaults(func=cmd_init)
 
     p_show = sub.add_parser("show")
-    add_common(p_show)
     show_sub = p_show.add_subparsers(dest="show_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(show_sub, p_show)
     p_show_cfg = show_sub.add_parser("config")
@@ -1647,7 +1646,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_show_cfg.set_defaults(func=cmd_show)
 
     p_est = sub.add_parser("estimate")
-    add_common(p_est)
     est_sub = p_est.add_subparsers(dest="estimate_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(est_sub, p_est)
     for name in ("summarize", "clean", "extract"):
@@ -1657,7 +1655,6 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(func=cmd_estimate, estimate_object=name)
 
     p_extract = sub.add_parser("extract")
-    add_common(p_extract)
     ext_sub = p_extract.add_subparsers(dest="extract_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(ext_sub, p_extract)
     p_search = ext_sub.add_parser("search")
@@ -1675,8 +1672,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_person.set_defaults(func=cmd_extract, extract_object="person")
 
     p_sum = sub.add_parser("summarize")
-    add_common(p_sum)
-    add_model_options(p_sum)
     sum_sub = p_sum.add_subparsers(dest="summarize_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(sum_sub, p_sum)
     for name in ("raw", "merged"):
@@ -1693,7 +1688,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_files.set_defaults(func=cmd_summarize, summarize_object="files")
 
     p_fix = sub.add_parser("fix")
-    add_common(p_fix)
     fix_sub = p_fix.add_subparsers(dest="fix_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(fix_sub, p_fix)
     p_fix_missing = fix_sub.add_parser("missing")
@@ -1705,7 +1699,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_fix_sum.set_defaults(func=cmd_summarize, summarize_object="merged")
 
     p_clean = sub.add_parser("clean")
-    add_common(p_clean)
     clean_sub = p_clean.add_subparsers(dest="clean_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(clean_sub, p_clean)
     p_clean_transcripts = clean_sub.add_parser("transcripts")
@@ -1721,10 +1714,16 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     cfg = load_config(getattr(args, "config", None), require_api=args.command in ("summarize", "fix"))
+    # CLI overrides config for paths
     for attr in ("input_dir", "output_dir"):
         val = getattr(args, attr, None)
         if val:
             setattr(cfg, attr, val)
+    # Ensure args has these attributes for command handlers that read them
+    if not hasattr(args, "input_dir"):
+        args.input_dir = None
+    if not hasattr(args, "output_dir"):
+        args.output_dir = None
     args.func(args, cfg)
 
 
