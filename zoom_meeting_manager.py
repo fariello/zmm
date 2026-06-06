@@ -1474,20 +1474,36 @@ def get_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
 
 
 def add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config")
-    parser.add_argument("--input-dir")
-    parser.add_argument("--output-dir")
-    parser.add_argument("--date-range")
-    parser.add_argument("--match")
-    parser.add_argument("--max", type=int)
-    parser.add_argument("--format", choices=("table", "json", "csv"), default="table")
-    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
-    parser.add_argument("--plain", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--clobber", action="store_true")
-    parser.add_argument("--ignore-model-errors", action="store_true")
-    parser.add_argument("--yes", action="store_true", help="Do not prompt before model-backed operations.")
-    parser.add_argument("--max-input-tokens", type=int)
+    parser.add_argument("--config", metavar="PATH",
+                        help="Path to zmm config file (default: auto-discovered).")
+    parser.add_argument("--input-dir", metavar="DIR",
+                        help="Directory containing raw Zoom meeting folders.")
+    parser.add_argument("--output-dir", metavar="DIR",
+                        help="Directory containing Merged-Transcripts-YYYY/, Summaries-YYYY/, etc.")
+    parser.add_argument("--date-range", metavar="RANGE",
+                        help="Filter by meeting date. Accepts: YYYY, YYYY-MM, "
+                             "YYYY-MM-DD, or ranges like '2026-01 to 2026-03', "
+                             "'2026-01-01..2026-01-31'.")
+    parser.add_argument("--match", metavar="TEXT",
+                        help="Filter meetings whose filename contains TEXT (case-insensitive substring).")
+    parser.add_argument("--max", type=int, metavar="N",
+                        help="Limit the number of items processed or displayed.")
+    parser.add_argument("--format", choices=("table", "json", "csv"), default="table",
+                        help="Output format (default: table).")
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                        help="Color output mode (default: auto, uses color when stdout is a terminal).")
+    parser.add_argument("--plain", action="store_true",
+                        help="Disable vistab table rendering; use plain aligned text.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Show what would be done without writing files or calling models.")
+    parser.add_argument("--clobber", action="store_true",
+                        help="Overwrite existing output files (summaries, cleaned transcripts, etc.).")
+    parser.add_argument("--ignore-model-errors", action="store_true",
+                        help="Continue on model/API errors instead of exiting (warn and skip).")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip confirmation prompts before model-backed bulk operations.")
+    parser.add_argument("--max-input-tokens", type=int, metavar="N",
+                        help="Abort if estimated input tokens exceed this limit.")
 
 
 class _SubcommandParser(argparse.ArgumentParser):
@@ -1523,15 +1539,24 @@ def _add_help_subcommand(sub_action: argparse._SubParsersAction, parent: argpars
 
 
 def add_model_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", nargs="+")
-    parser.add_argument("--summary-model")
-    parser.add_argument("--cleanup-model")
-    parser.add_argument("--extraction-model")
-    parser.add_argument("--prioritization-model")
-    parser.add_argument("--prompt-layer", action="append")
-    parser.add_argument("--prompt-context", action="append")
-    parser.add_argument("--prompt-person", action="append")
-    parser.add_argument("--prompt-correction", action="append")
+    parser.add_argument("--model", nargs="+", metavar="MODEL",
+                        help="Model(s) to use (overrides config default for this task).")
+    parser.add_argument("--summary-model", metavar="MODEL",
+                        help="Model for summarization (overrides [models] summary).")
+    parser.add_argument("--cleanup-model", metavar="MODEL",
+                        help="Model for transcript cleanup (overrides [models] cleanup).")
+    parser.add_argument("--extraction-model", metavar="MODEL",
+                        help="Model for extraction (overrides [models] extraction).")
+    parser.add_argument("--prioritization-model", metavar="MODEL",
+                        help="Model for prioritization (overrides [models] prioritization).")
+    parser.add_argument("--prompt-layer", action="append", metavar="NAME",
+                        help="Add a prompt layer by name (can be repeated).")
+    parser.add_argument("--prompt-context", action="append", metavar="NAME",
+                        help="Add a context prompt layer (e.g. contexts/uri).")
+    parser.add_argument("--prompt-person", action="append", metavar="NAME",
+                        help="Add a person prompt layer (e.g. people/gabriel).")
+    parser.add_argument("--prompt-correction", action="append", metavar="NAME",
+                        help="Add a corrections prompt layer (e.g. corrections/uri).")
 
 
 def build_parser() -> argparse.ArgumentParser:
