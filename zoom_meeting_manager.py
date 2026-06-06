@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1138,9 +1139,35 @@ def client_for(cfg: Config):
         )
     if not cfg.api_key:
         raise SystemExit("ERROR: Missing API key. Configure [api] api_key or legacy api_key.")
+    _warn_insecure_base_url(cfg.base_url)
     client = _make_client(cfg.api_key, cfg.base_url)
     assert client is not None  # openai is not None here, so _make_client returns a client
     return client
+
+
+_WARNED_INSECURE_URL = False
+
+
+def _warn_insecure_base_url(base_url: str | None) -> None:
+    """Warn once if base_url sends the API key over cleartext http:// to a
+    non-localhost host. https:// and localhost are not flagged."""
+    global _WARNED_INSECURE_URL
+    if _WARNED_INSECURE_URL or not base_url:
+        return
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except Exception:
+        return
+    host = (parsed.hostname or "").lower()
+    is_local = host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local")
+    if parsed.scheme == "http" and not is_local:
+        _WARNED_INSECURE_URL = True
+        print(
+            f"WARNING: base_url uses cleartext http:// ({base_url}); your API key "
+            f"will be sent unencrypted. Use https:// unless this is a trusted "
+            f"local endpoint.",
+            file=sys.stderr,
+        )
 
 
 def _completion_kwargs(args: argparse.Namespace) -> dict[str, Any]:
@@ -2039,7 +2066,19 @@ confirm_model_calls = true
 color = auto
 """
     atomic_write_text(target, text)
+    # If the config embeds a LITERAL api key (not blank, not {env:..}/$VAR/${..}
+    # indirection), tighten perms to 0600 so the secret is not world/group
+    # readable. (20260606-172943-S2-S1)
+    literal_key = bool(api_key) and not api_key.startswith(("{", "$"))
+    if literal_key:
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            print(f"WARNING: could not chmod 600 {target}; it may contain a "
+                  f"world-readable API key. Run: chmod 600 {target}", file=sys.stderr)
     print(f"Wrote {target}")
+    if literal_key:
+        print(f"  (set mode 0600 on {target} because it contains a literal API key)")
     print("Next: edit paths/API settings, then run `zmm index --rebuild` and `zmm list missing`.")
 
 

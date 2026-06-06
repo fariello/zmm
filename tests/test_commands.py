@@ -532,6 +532,36 @@ def test_call_model_text_ignore_errors_returns_none(monkeypatch):
 
 # ----------------------------- truncation detection (finish_reason='length') ----------------------------- #
 
+# ----------------------------- security hygiene (S2-S1 / S2-S2) ----------------------------- #
+
+def test_init_config_env_key_not_chmodded(tmp_path, monkeypatch):
+    # 20260606-172943-S2-S1: with {env:..} indirection (no literal secret) the
+    # non-interactive init writes a config and does NOT announce a 0600 tighten.
+    import io, contextlib
+    monkeypatch.setattr(zmm, "_load_opencode_config", lambda: {})  # force [api] section
+    target = tmp_path / "zmm.cfg"
+    args = _ns(output=str(target), clobber=False, yes=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        zmm.cmd_init(args, zmm.Config())
+    assert "{env:" in target.read_text()
+    assert "mode 0600" not in buf.getvalue()  # env indirection != literal secret
+
+
+def test_warn_insecure_base_url(monkeypatch, capsys):
+    # 20260606-172943-S2-S2
+    monkeypatch.setattr(zmm, "_WARNED_INSECURE_URL", False, raising=False)
+    zmm._warn_insecure_base_url("http://example.com/v1")
+    zmm._warn_insecure_base_url("http://example.com/v1")  # once only
+    err = capsys.readouterr().err
+    assert err.count("cleartext") == 1
+    monkeypatch.setattr(zmm, "_WARNED_INSECURE_URL", False, raising=False)
+    zmm._warn_insecure_base_url("https://example.com/v1")
+    zmm._warn_insecure_base_url("http://localhost:11434/v1")
+    zmm._warn_insecure_base_url("http://127.0.0.1/v1")
+    assert "cleartext" not in capsys.readouterr().err
+
+
 def test_parse_json_response_rejects_non_object():
     # 20260606-172943-S2-B2: a valid-but-non-object JSON reply must be treated as
     # a parse failure (so the caller saves a diagnostic and reports a clean
