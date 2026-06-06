@@ -21,13 +21,14 @@ class FakeMessage:
 
 
 class FakeChoice:
-    def __init__(self, content):
+    def __init__(self, content, finish_reason="stop"):
         self.message = FakeMessage(content)
+        self.finish_reason = finish_reason
 
 
 class FakeResponse:
-    def __init__(self, content):
-        self.choices = [FakeChoice(content)]
+    def __init__(self, content, finish_reason="stop"):
+        self.choices = [FakeChoice(content, finish_reason)]
 
 
 class FakeCompletions:
@@ -35,11 +36,11 @@ class FakeCompletions:
         self._parent = parent
 
     def create(self, *, model, messages, **kwargs):
-        self._parent.calls.append({"model": model, "messages": messages})
+        self._parent.calls.append({"model": model, "messages": messages, "kwargs": kwargs})
         content = self._parent.next_content
         if callable(content):
             content = content(model, messages)
-        return FakeResponse(content)
+        return FakeResponse(content, getattr(self._parent, "finish_reason", "stop"))
 
 
 class FakeChat:
@@ -63,8 +64,9 @@ class FakeModels:
 class FakeClient:
     """Stand-in for openai.OpenAI used in tests."""
 
-    def __init__(self, content="{}", model_ids=None):
+    def __init__(self, content="{}", model_ids=None, finish_reason="stop"):
         self.next_content = content
+        self.finish_reason = finish_reason
         self.calls = []
         self.chat = FakeChat(self)
         self.models = FakeModels(model_ids or [])
@@ -73,8 +75,8 @@ class FakeClient:
 @pytest.fixture
 def fake_client(monkeypatch):
     """Patch zmm.client_for to return a controllable FakeClient."""
-    def _install(content="{}", model_ids=None):
-        client = FakeClient(content=content, model_ids=model_ids)
+    def _install(content="{}", model_ids=None, finish_reason="stop"):
+        client = FakeClient(content=content, model_ids=model_ids, finish_reason=finish_reason)
         monkeypatch.setattr(zmm, "client_for", lambda cfg: client)
         return client
     return _install

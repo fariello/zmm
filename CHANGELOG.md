@@ -54,6 +54,26 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   were wrongly reported as missing (e.g. 445 instead of 37).
 - `list missing` / `list meetings` print a trailing count of matching meetings
   (table output only).
+- Model responses truncated at the output-token limit are now detected
+  (`finish_reason == 'length'`) and reported as a specific, actionable error
+  ("output was truncated; raise --max-output-tokens") instead of an opaque
+  `JSONDecodeError: Expecting value: line 1 column 1`. This was the real cause
+  of summarize failures on long meetings.
+- Error messages now give failure-specific "Next:" guidance (truncation,
+  invalid JSON, auth, not-found, rate-limit, timeout) instead of always saying
+  "Check API key, endpoint, model name, network access."
+
+### Reliability & progress (post-tag)
+- `summarize` and `clean` now send an output-token budget (`max_tokens`,
+  default 16000) so long summaries are not silently truncated by a provider's
+  small default cap. Override with `--max-output-tokens N` (0 = no cap).
+- Per-item progress for `summarize`/`clean` now shows a wall-clock timestamp,
+  per-item duration, running elapsed time, ETA, running cost, and projected
+  total cost. A final line reports total time and total cost with the actual
+  input/output token counts. Cost uses real API `usage` tokens priced from the
+  per-model rates in `opencode.json` (so it counts output tokens, unlike the
+  input-only pre-run estimate). Progress now prints to stderr so stdout
+  json/csv output stays machine-parseable.
 
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line

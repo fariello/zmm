@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -72,6 +73,11 @@ CONFIG_NAME = "zoom_meeting_manager.cfg"
 
 # Default request timeout (seconds) for model/API calls.
 DEFAULT_API_TIMEOUT = 600
+
+# Default output-token budget per model call. Summaries (esp. detailed_notes)
+# can be long; many gateways default to a small cap that truncates the JSON
+# mid-output. Sized generously; override with --max-output-tokens (0 = no cap).
+DEFAULT_MAX_OUTPUT_TOKENS = 16000
 
 CHECK = "✓"
 CROSS = "✗"
@@ -1137,6 +1143,74 @@ def client_for(cfg: Config):
     return client
 
 
+def _completion_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """Extra kwargs for chat.completions.create derived from CLI args.
+
+    Sends an output-token budget so long summaries are not silently truncated
+    by a provider's small default cap. Defaults to DEFAULT_MAX_OUTPUT_TOKENS;
+    override with --max-output-tokens N, or pass 0 to send no cap at all.
+    """
+    n = getattr(args, "max_output_tokens", None)
+    if n is None:
+        n = DEFAULT_MAX_OUTPUT_TOKENS
+    if n and n > 0:
+        return {"max_tokens": n}
+    return {}
+
+
+class ModelTruncationError(Exception):
+    """The model stopped because it hit the output token limit.
+
+    Raised when a chat completion's finish_reason is 'length', which means the
+    response was cut off mid-output (so JSON is incomplete / unparseable).
+    """
+
+
+# Token usage (input, output) from the most recent model call. Set by
+# _extract_content so callers/progress reporters can read true cost without
+# threading the response object through every call signature.
+_LAST_USAGE: tuple[int, int] = (0, 0)
+
+
+def _usage_from_response(response: Any) -> tuple[int, int]:
+    """Return (input_tokens, output_tokens) from a response, 0s if absent.
+
+    Providers may name these prompt_tokens/completion_tokens (OpenAI) or
+    input_tokens/output_tokens; we accept either.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return (0, 0)
+    inp = getattr(usage, "prompt_tokens", None)
+    if inp is None:
+        inp = getattr(usage, "input_tokens", 0)
+    out = getattr(usage, "completion_tokens", None)
+    if out is None:
+        out = getattr(usage, "output_tokens", 0)
+    return (int(inp or 0), int(out or 0))
+
+
+def _extract_content(response: Any, *, model: str, label: str) -> str:
+    """Pull text from a chat-completions response, detecting truncation.
+
+    Records token usage in _LAST_USAGE (true cost, incl. output). Raises
+    ModelTruncationError if the provider reports it stopped due to the output
+    length cap. Without this, a truncated response surfaces only as an opaque
+    JSONDecodeError ('Expecting value: line 1 column 1').
+    """
+    global _LAST_USAGE
+    _LAST_USAGE = _usage_from_response(response)
+    choice = response.choices[0]
+    finish = getattr(choice, "finish_reason", None)
+    content = getattr(choice.message, "content", None) or ""
+    if finish == "length":
+        raise ModelTruncationError(
+            f"model output was truncated (finish_reason='length'); "
+            f"{len(content):,} chars returned before the cap was hit"
+        )
+    return content
+
+
 def chat_messages(system: str, user: str) -> Any:
     """Build an OpenAI chat-completions message list.
 
@@ -1161,8 +1235,9 @@ def call_model_text(cfg: Config, args: argparse.Namespace, *, client: Any = None
     """
     client = client or client_for(cfg)
     try:
-        response = client.chat.completions.create(model=model, messages=messages)
-        return response.choices[0].message.content or ""
+        response = client.chat.completions.create(
+            model=model, messages=messages, **_completion_kwargs(args))
+        return _extract_content(response, model=model, label=label)
     except Exception as exc:
         print_model_error(exc, model=model, operation=operation, label=label, cfg=cfg)
         if getattr(args, "ignore_model_errors", False):
@@ -1173,8 +1248,9 @@ def call_model_text(cfg: Config, args: argparse.Namespace, *, client: Any = None
 def call_model_json(cfg: Config, args: argparse.Namespace, *, model: str, messages: Any, operation: str, label: str) -> dict[str, Any]:
     client = client_for(cfg)
     try:
-        response = client.chat.completions.create(model=model, messages=messages)
-        content = (response.choices[0].message.content or "").strip()
+        response = client.chat.completions.create(
+            model=model, messages=messages, **_completion_kwargs(args))
+        content = _extract_content(response, model=model, label=label).strip()
         try:
             return parse_json_response(content)
         except Exception as exc:
@@ -1244,6 +1320,30 @@ def _scrub_secret(text: str, cfg: Config) -> str:
     return text
 
 
+def _error_hint(exc: Exception) -> str:
+    """Map an exception to an actionable 'Next:' line, by failure category."""
+    if isinstance(exc, ModelTruncationError):
+        return ("The model hit its output limit. Raise it with "
+                "--max-output-tokens N (e.g. 32000), or shorten the input "
+                "(summarize the cleaned transcript, or trim with --max-input-tokens).")
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return ("The model returned text that is not valid JSON (often a "
+                "truncated or fenced/prose-wrapped reply). See the saved "
+                ".invalid-response.txt diagnostic; if it is cut off mid-output, "
+                "raise --max-output-tokens.")
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if "auth" in name.lower() or "401" in msg or "api key" in msg or "unauthorized" in msg:
+        return "Authentication failed. Check the API key and that it is valid for this endpoint."
+    if "notfound" in name.lower() or "404" in msg or "model" in msg and "not" in msg:
+        return "The model or endpoint was not found. Verify the model name and base_url."
+    if "ratelimit" in name.lower() or "429" in msg:
+        return "Rate limited. Wait and retry, or reduce concurrency/batch size."
+    if "timeout" in name.lower() or "timed out" in msg or "connection" in msg:
+        return "Network/timeout problem. Check connectivity to the endpoint and retry."
+    return "Check API key, endpoint, model name, network access, and provider status."
+
+
 def print_model_error(exc: Exception, *, model: str, operation: str, label: str, cfg: Config) -> None:
     print("ERROR: model/API call failed", file=sys.stderr)
     print(f"  Operation: {operation}", file=sys.stderr)
@@ -1251,7 +1351,7 @@ def print_model_error(exc: Exception, *, model: str, operation: str, label: str,
     print(f"  Item:      {label}", file=sys.stderr)
     print(f"  Endpoint:  {cfg.base_url or 'default OpenAI endpoint'}", file=sys.stderr)
     print(f"  Error:     {_scrub_secret(f'{type(exc).__name__}: {exc}', cfg)}", file=sys.stderr)
-    print("  Next:      Check API key, endpoint, model name, network access, and provider status.", file=sys.stderr)
+    print(f"  Next:      {_error_hint(exc)}", file=sys.stderr)
 
 
 # ----------------------------- Commands ----------------------------- #
@@ -2121,6 +2221,105 @@ def _estimate_cost(tokens: int, model: str, direction: str = "input") -> str | N
     return f"${dollar:.4f}"
 
 
+def _cost_rate(model: str, direction: str) -> float | None:
+    """Return the per-million-token price for model/direction, or None."""
+    costs = _load_model_costs()
+    model_cost = costs.get(model)
+    if not model_cost:
+        for key, val in costs.items():
+            if model in key or key in model:
+                model_cost = val
+                break
+    if not model_cost:
+        return None
+    rate = model_cost.get(direction)
+    return float(rate) if rate else None
+
+
+def _fmt_hms(seconds: float) -> str:
+    """Format a duration as H:MM:SS or M:SS."""
+    seconds = max(0, int(round(seconds)))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+class ProgressReporter:
+    """Per-item progress for bulk model loops: timestamp, elapsed, ETA, and
+    running/projected cost (from actual API usage tokens).
+
+    All lines go to stderr so stdout (json/csv) contracts stay clean. Cost is
+    computed from `_LAST_USAGE` using per-model pricing; if no pricing is
+    available, cost fields are omitted gracefully.
+    """
+
+    def __init__(self, total: int, *, verb: str, model: str, stream: Any = None) -> None:
+        self.total = total
+        self.verb = verb
+        self.model = model
+        self.stream = stream if stream is not None else sys.stderr
+        self.in_rate = _cost_rate(model, "input")
+        self.out_rate = _cost_rate(model, "output")
+        self.started = time.monotonic()
+        self.done = 0
+        self.in_tokens = 0
+        self.out_tokens = 0
+        self.cost = 0.0
+        self.have_cost = False
+
+    def _now(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
+
+    def start_item(self, idx: int, label: str) -> None:
+        """Print the start line for an item (before the model call)."""
+        prefix = f"[{idx}/{self.total}]"
+        eta = ""
+        if self.done:
+            avg = (time.monotonic() - self.started) / self.done
+            remaining = avg * (self.total - self.done)
+            eta = f"  ETA {_fmt_hms(remaining)}"
+        print(f"{self._now()} {prefix} {self.verb} {label} with {self.model}...{eta}",
+              file=self.stream, flush=True)
+        self._item_started = time.monotonic()
+
+    def finish_item(self, *, ok: bool = True) -> None:
+        """Record completion of an item, adding usage cost from _LAST_USAGE."""
+        self.done += 1
+        item_secs = time.monotonic() - getattr(self, "_item_started", self.started)
+        inp, out = _LAST_USAGE
+        self.in_tokens += inp
+        self.out_tokens += out
+        item_cost = 0.0
+        if self.in_rate is not None:
+            item_cost += (inp / 1_000_000) * self.in_rate
+            self.have_cost = True
+        if self.out_rate is not None:
+            item_cost += (out / 1_000_000) * self.out_rate
+            self.have_cost = True
+        self.cost += item_cost
+        elapsed = time.monotonic() - self.started
+        parts = [f"  done in {_fmt_hms(item_secs)}",
+                 f"elapsed {_fmt_hms(elapsed)}"]
+        if self.done < self.total:
+            avg = elapsed / self.done
+            parts.append(f"ETA {_fmt_hms(avg * (self.total - self.done))}")
+        if self.have_cost:
+            parts.append(f"cost ${self.cost:.4f}")
+            if self.done < self.total:
+                projected = self.cost / self.done * self.total
+                parts.append(f"proj ${projected:.4f}")
+        print("        " + "  ".join(parts), file=self.stream, flush=True)
+
+    def summary(self) -> None:
+        """Print a final totals line (timing + cost)."""
+        elapsed = time.monotonic() - self.started
+        line = f"  Time: {_fmt_hms(elapsed)} for {self.done} item(s)"
+        if self.have_cost:
+            line += (f"  |  Cost: ${self.cost:.4f} "
+                     f"({self.in_tokens:,} in + {self.out_tokens:,} out tokens)")
+        print(line, file=self.stream, flush=True)
+
+
 def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
     candidates: list[str | None] = []
@@ -2274,6 +2473,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     n_done = n_skipped = n_failed = 0
     selected = records[: args.max or None]
     total = len(selected)
+    progress = ProgressReporter(total, verb="Cleaning", model=model)
     for idx, rec in enumerate(selected, start=1):
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             n_skipped += 1
@@ -2294,23 +2494,26 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             print(f"Would clean {rec.merged_path} with {model} -> {out_path}")
             continue
         text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
-        print(f"[{idx}/{total}] Cleaning {rec.title} with {model}...", flush=True)
+        progress.start_item(idx, rec.title)
         cleaned = call_model_text(cfg, args, client=client, model=model,
                                   messages=chat_messages(prompt, text),
                                   operation="clean transcript", label=rec.merged_path)
         if cleaned is None:  # error, ignore-model-errors set
             n_failed += 1
+            progress.finish_item(ok=False)
             if journal:
                 journal.mark(rec.merged_path, "failed")
             continue
         atomic_write_text(out_path, cleaned.strip() + "\n")
         print(f"Wrote {out_path}")
         n_done += 1
+        progress.finish_item(ok=True)
         if journal:
             journal.mark(rec.merged_path, "done")
     if not args.dry_run:
         if journal and n_failed == 0:
             journal.finish()
+        progress.summary()
         print(f"\nDone: {n_done} cleaned, {n_skipped} skipped, {n_failed} failed.")
         if n_failed:
             print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
@@ -2572,15 +2775,17 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     journal = RunJournal(output, "summarize")
     n_done = n_failed = 0
     total = len(to_process)
+    progress = ProgressReporter(total, verb="Summarizing", model=model)
     for idx, (rec, source) in enumerate(to_process, start=1):
         # Skip corrections augmentation if source is an already-cleaned transcript
         is_cleaned = any(source == cp for cp in rec.cleaned_paths)
         prompt, prompt_label = build_prompt(cfg, args, "summary", skip_corrections=is_cleaned)
         text = Path(source).read_text(encoding="utf-8", errors="replace")
-        print(f"[{idx}/{total}] Summarizing {rec.title} with {model}...", flush=True)
+        progress.start_item(idx, rec.title)
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=chat_messages(prompt, text))
         if not data:
             n_failed += 1
+            progress.finish_item(ok=False)
             journal.mark(source, "failed")
             continue
         # Validate against the summary schema (non-fatal: warn, save diagnostic, still render)
@@ -2591,10 +2796,12 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
             save_diagnostic("schema-warnings", source, model, "\n".join(warnings), cfg, args)
         write_summary_outputs(rec, source, data, model, prompt_label, cfg)
         n_done += 1
+        progress.finish_item(ok=True)
         journal.mark(source, "done")
     # Keep journal only if something failed (so --resume can use it).
     if n_failed == 0:
         journal.finish()
+    progress.summary()
     print(f"\nDone: {n_done} summarized, {n_skipped} skipped, {n_failed} failed.")
     if n_failed:
         print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
@@ -2996,6 +3203,11 @@ def add_common(parser: argparse.ArgumentParser, *, is_root: bool = False) -> Non
                         help="Skip confirmation prompts before model-backed bulk operations.")
     parser.add_argument("--max-input-tokens", type=int, metavar="N", default=D,
                         help="Abort if estimated input tokens exceed this limit.")
+    parser.add_argument("--max-output-tokens", type=int, metavar="N",
+                        default=DEFAULT_MAX_OUTPUT_TOKENS if is_root else D,
+                        help=f"Max tokens the model may generate per call "
+                             f"(default: {DEFAULT_MAX_OUTPUT_TOKENS}; 0 = no cap). "
+                             f"Raise if summaries are truncated.")
     parser.add_argument("--debug", action="store_true", default=D if not is_root else False,
                         help="Print diagnostic information (timings, per-item outcomes, internal errors).")
 

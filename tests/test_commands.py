@@ -446,8 +446,11 @@ def test_summarize_shows_progress(tmp_path, fake_client, capsys):
     cfg = _summary_cfg(output_dir)
     args = _ns(output_dir=str(output_dir), summarize_object="merged", summarization_source="merged")
     zmm.cmd_summarize(args, cfg)
-    out = capsys.readouterr().out
-    assert "[1/1] Summarizing" in out
+    captured = capsys.readouterr()
+    # Progress now goes to stderr (keeps stdout json/csv clean) and includes
+    # a [idx/total] counter plus timing/elapsed fields.
+    assert "[1/1] Summarizing" in captured.err
+    assert "elapsed" in captured.err
 
 
 # ----------------------------- P5-F2: paths command ----------------------------- #
@@ -521,6 +524,127 @@ def test_call_model_text_ignore_errors_returns_none(monkeypatch):
                               messages=zmm.chat_messages("s", "u"),
                               operation="clean", label="x")
     assert out is None
+
+
+# ----------------------------- truncation detection (finish_reason='length') ----------------------------- #
+
+def test_completion_sends_default_max_output_tokens(fake_client):
+    import argparse
+    client = fake_client("{}")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=False)
+    zmm.call_model_json(cfg, args, model="m",
+                        messages=zmm.chat_messages("s", "u"),
+                        operation="summarize", label="x")
+    assert client.calls[-1]["kwargs"].get("max_tokens") == zmm.DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def test_completion_respects_max_output_tokens_arg(fake_client):
+    import argparse
+    client = fake_client("{}")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=False, max_output_tokens=32000)
+    zmm.call_model_json(cfg, args, model="m",
+                        messages=zmm.chat_messages("s", "u"),
+                        operation="summarize", label="x")
+    assert client.calls[-1]["kwargs"].get("max_tokens") == 32000
+
+
+def test_completion_no_cap_when_zero(fake_client):
+    import argparse
+    client = fake_client("{}")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=False, max_output_tokens=0)
+    zmm.call_model_json(cfg, args, model="m",
+                        messages=zmm.chat_messages("s", "u"),
+                        operation="summarize", label="x")
+    assert "max_tokens" not in client.calls[-1]["kwargs"]
+
+
+def test_truncated_response_detected_and_specific_error(fake_client, capsys):
+    import argparse
+    # Valid-looking partial JSON, but provider says it stopped on length.
+    client = fake_client('{"improved_title": "partial', finish_reason="length")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=False)
+    with pytest.raises(SystemExit):
+        zmm.call_model_json(cfg, args, model="m",
+                            messages=zmm.chat_messages("s", "u"),
+                            operation="summarize", label="x")
+    err = capsys.readouterr().err
+    assert "truncated" in err
+    assert "--max-output-tokens" in err  # actionable
+    # Must NOT fall back to the generic auth/network advice.
+    assert "Check API key" not in err
+
+
+def test_truncated_response_ignore_errors_returns_empty(fake_client):
+    import argparse
+    client = fake_client("{", finish_reason="length")
+    cfg = zmm.Config(api_key="k")
+    args = argparse.Namespace(ignore_model_errors=True)
+    out = zmm.call_model_json(cfg, args, model="m",
+                              messages=zmm.chat_messages("s", "u"),
+                              operation="summarize", label="x")
+    assert out == {}
+
+
+def test_error_hint_categories():
+    assert "output limit" in zmm._error_hint(zmm.ModelTruncationError("x"))
+    assert "not valid JSON" in zmm._error_hint(json.JSONDecodeError("m", "doc", 0))
+    assert "Authentication" in zmm._error_hint(RuntimeError("401 Unauthorized"))
+
+
+# ----------------------------- ProgressReporter (timing + cost) ----------------------------- #
+
+def test_progress_reporter_timing_fields(capsys):
+    import io
+    buf = io.StringIO()
+    pr = zmm.ProgressReporter(2, verb="Summarizing", model="no-such-model", stream=buf)
+    pr.start_item(1, "Alpha")
+    pr.finish_item(ok=True)
+    pr.start_item(2, "Beta")   # second start should show an ETA (we have 1 done)
+    pr.finish_item(ok=True)
+    pr.summary()
+    out = buf.getvalue()
+    assert "[1/2] Summarizing Alpha" in out
+    assert "[2/2] Summarizing Beta" in out
+    assert "ETA" in out          # appears on the 2nd start and on finish lines
+    assert "elapsed" in out
+    assert "Time:" in out
+    # No pricing for this fake model -> no cost fields.
+    assert "cost $" not in out
+
+
+def test_progress_reporter_cost_from_usage(monkeypatch):
+    import io
+    # $2/M input, $6/M output for our test model.
+    monkeypatch.setattr(zmm, "_load_model_costs",
+                        lambda: {"m": {"input": 2.0, "output": 6.0}})
+    buf = io.StringIO()
+    pr = zmm.ProgressReporter(1, verb="Summarizing", model="m", stream=buf)
+    pr.start_item(1, "Alpha")
+    # Simulate usage recorded by _extract_content: 1,000,000 in + 1,000,000 out.
+    monkeypatch.setattr(zmm, "_LAST_USAGE", (1_000_000, 1_000_000))
+    pr.finish_item(ok=True)
+    pr.summary()
+    out = buf.getvalue()
+    assert "cost $8.0000" in out          # 1M*$2 + 1M*$6
+    assert "1,000,000 in + 1,000,000 out tokens" in out
+
+
+def test_usage_from_response_variants():
+    class U1:  # OpenAI naming
+        prompt_tokens = 10
+        completion_tokens = 5
+    class U2:  # alternative naming
+        input_tokens = 7
+        output_tokens = 3
+    class R:
+        def __init__(self, u): self.usage = u
+    assert zmm._usage_from_response(R(U1())) == (10, 5)
+    assert zmm._usage_from_response(R(U2())) == (7, 3)
+    assert zmm._usage_from_response(R(None)) == (0, 0)
 
 
 # ----------------------------- P7-X1: actionable openai-missing error ----------------------------- #

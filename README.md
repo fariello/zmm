@@ -321,6 +321,8 @@ zmm extract me items       # both
 --match TEXT            Filter by filename substring (case-insensitive)
 --max N                 Limit number of items processed
 --max-input-tokens N    Abort if estimated input tokens exceed N
+--max-output-tokens N   Max tokens the model may generate per call
+                        (default 16000; 0 = no cap). Raise if summaries truncate.
 --dry-run               Show what would happen without acting
 --format FMT            Output format: table, json, csv
 --plain                 Disable vistab and colors
