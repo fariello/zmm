@@ -679,6 +679,12 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
                 expected_merged_path=str(output / f"Merged-Transcripts-{year}" / merged_name),
             )
 
+    # Build a lookup from expected_merged_path → record key for matching
+    expected_to_key: dict[str, str] = {}
+    for key, rec in records.items():
+        if rec.expected_merged_path:
+            expected_to_key[str(Path(rec.expected_merged_path).resolve())] = key
+
     for merged_dir in sorted(output.glob("Merged-Transcripts-*")):
         if not merged_dir.is_dir():
             continue
@@ -693,8 +699,19 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
                 continue
             if match_lower and match_lower not in path.name.lower():
                 continue
+
+            # Try to match to an existing raw record by expected path
+            resolved = str(path.resolve())
+            existing_key = expected_to_key.get(resolved)
+            if existing_key and existing_key in records:
+                records[existing_key].merged_path = str(path)
+                continue
+
+            # Extract title: strip date+time prefix and "meeting-saved-closed-caption" suffix
             title = re.sub(r"^\d{4}-\d{2}-\d{2}[- ]?\d{0,2}\.?\d{0,2}\.?\d{0,2}[- ]?", "", path.stem)
-            title = title.replace("meeting_saved_closed_caption", "").replace("-", " ").strip() or path.stem
+            # Remove the common caption suffix (with dashes or underscores)
+            title = re.sub(r"[-_ ]?meeting[-_ ]saved[-_ ]closed[-_ ]caption$", "", title, flags=re.IGNORECASE)
+            title = title.replace("-", " ").strip() or path.stem
             key = f"{meeting_date or year}-{slugify(title)}"
             rec = records.get(key)
             if not rec:
