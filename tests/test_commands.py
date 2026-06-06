@@ -162,7 +162,7 @@ def test_cmd_clean_skips_existing(tmp_path, fake_client):
     assert client.calls == []
 
 
-def test_cmd_clean_dry_run(tmp_path, fake_client):
+def test_cmd_clean_dry_run(tmp_path, fake_client, capsys):
     _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
     client = fake_client("body")
     cfg = zmm.Config(output_dir=str(output_dir))
@@ -170,6 +170,10 @@ def test_cmd_clean_dry_run(tmp_path, fake_client):
     args = _ns(output_dir=str(output_dir), cleanup_prompt=None, dry_run=True)
     zmm.cmd_clean(args, cfg)
     assert client.calls == []
+    # 20260606-172943-S2-B3: dry run reports the worklist count (the items that
+    # would actually be processed), not the raw record count.
+    out = capsys.readouterr().out
+    assert "1 would be cleaned" in out
 
 
 # ----------------------------- cmd_extract kind filtering (P3-T4) ----------------------------- #
@@ -527,6 +531,42 @@ def test_call_model_text_ignore_errors_returns_none(monkeypatch):
 
 
 # ----------------------------- truncation detection (finish_reason='length') ----------------------------- #
+
+def test_parse_json_response_rejects_non_object():
+    # 20260606-172943-S2-B2: a valid-but-non-object JSON reply must be treated as
+    # a parse failure (so the caller saves a diagnostic and reports a clean
+    # model error) instead of slipping through and crashing render_summary_text.
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        zmm.parse_json_response("[1, 2, 3]")
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        zmm.parse_json_response("42")
+    # Object still parses fine, including fenced.
+    assert zmm.parse_json_response('{"a": 1}') == {"a": 1}
+    assert zmm.parse_json_response('```json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_summarize_non_object_model_output_fails_gracefully(tmp_path, fake_client, capsys):
+    # 20260606-172943-S2-B2 end-to-end: model returns a JSON array; the run must
+    # count it as failed (and not crash) — no summary files written.
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
+    fake_client("[1, 2, 3]")
+    cfg = _summary_cfg(output_dir)
+    # With --ignore-model-errors the non-object reply is counted as failed and
+    # the run continues (no crash); without it, it is a clean SystemExit(1).
+    args = _ns(output_dir=str(output_dir), summarize_object="merged",
+               summarization_source="merged", ignore_model_errors=True)
+    zmm.cmd_summarize(args, cfg)  # must not raise AttributeError/traceback
+    out = capsys.readouterr().out
+    assert "0 summarized" in out and "1 failed" in out
+    assert list((output_dir / "Summaries-2026").glob("*.summary.json")) == []
+
+    # Default (fail-fast): a clean SystemExit, NOT an AttributeError traceback.
+    fake_client("[1, 2, 3]")
+    args2 = _ns(output_dir=str(output_dir), summarize_object="merged",
+                summarization_source="merged")
+    with pytest.raises(SystemExit):
+        zmm.cmd_summarize(args2, cfg)
+
 
 def test_completion_sends_default_max_output_tokens(fake_client):
     import argparse

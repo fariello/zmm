@@ -173,3 +173,20 @@ def test_resolve_output_dir_falls_back_to_config():
     cfg = zmm.Config(output_dir="/from/config")
     args = _ns(output_dir=None)
     assert str(zmm.resolve_output_dir(args, cfg)) == "/from/config"
+
+
+# ----------------------------- main() input validation (S2-B1) ----------------------------- #
+
+def test_main_invalid_date_range_clean_error(tmp_path, monkeypatch, capsys):
+    # 20260606-172943-S2-B1: a valid-format but out-of-range --date-range must
+    # produce a clean ERROR (SystemExit) instead of an uncaught ValueError
+    # traceback from deep inside a command handler.
+    monkeypatch.setattr(sys, "argv",
+                        ["zmm", "list", "meetings",
+                         "--output-dir", str(tmp_path), "--date-range", "2026-13"])
+    with pytest.raises(SystemExit) as exc:
+        zmm.main()
+    # SystemExit carries a string message (not a clean 0 exit).
+    assert isinstance(exc.value.code, str)
+    assert "invalid --date-range" in exc.value.code
+    assert "2026-13" in exc.value.code

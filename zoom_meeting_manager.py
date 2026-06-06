@@ -1169,6 +1169,9 @@ class ModelTruncationError(Exception):
 # Token usage (input, output) from the most recent model call. Set by
 # _extract_content so callers/progress reporters can read true cost without
 # threading the response object through every call signature.
+# NOTE: this is a module-level global and is only correct for SERIAL model
+# calls (the summarize/clean loops are serial). If model calls are ever
+# parallelized, replace this with a per-call return value to avoid races.
 _LAST_USAGE: tuple[int, int] = (0, 0)
 
 
@@ -1268,12 +1271,19 @@ def call_model_json(cfg: Config, args: argparse.Namespace, *, model: str, messag
 
 def parse_json_response(content: str) -> dict[str, Any]:
     try:
-        return json.loads(content)
+        data = json.loads(content)
     except json.JSONDecodeError:
         m = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
-        if m:
-            return json.loads(m.group(1))
-        raise
+        if not m:
+            raise
+        data = json.loads(m.group(1))
+    # The summary contract is a JSON object. A valid-but-non-object reply
+    # (array, number, string) would otherwise slip through and later crash
+    # render_summary_text with AttributeError; treat it as a parse failure so
+    # the caller saves a diagnostic and reports a clean model error.
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+    return data
 
 
 # Required top-level keys in the model_output, per schemas/summary.json.
@@ -1335,7 +1345,7 @@ def _error_hint(exc: Exception) -> str:
     msg = str(exc).lower()
     if "auth" in name.lower() or "401" in msg or "api key" in msg or "unauthorized" in msg:
         return "Authentication failed. Check the API key and that it is valid for this endpoint."
-    if "notfound" in name.lower() or "404" in msg or "model" in msg and "not" in msg:
+    if "notfound" in name.lower() or "404" in msg or ("model" in msg and "not" in msg):
         return "The model or endpoint was not found. Verify the model name and base_url."
     if "ratelimit" in name.lower() or "429" in msg:
         return "Rate limited. Wait and retry, or reduce concurrency/batch size."
@@ -2543,10 +2553,12 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     resume_done = load_resume_done(output, "clean") if getattr(args, "resume", False) else set()
     journal = None if args.dry_run else RunJournal(output, "clean")
     n_done = n_skipped = n_failed = 0
-    selected = records[: args.max or None]
-    total = len(selected)
-    progress = ProgressReporter(total, verb="Cleaning", model=model)
-    for idx, rec in enumerate(selected, start=1):
+
+    # Build the worklist first (resolving skips) so progress sizing, ETA, cost
+    # projection, and --max all apply to the items actually processed — not to
+    # records that will be skipped for missing input / resume / existing output.
+    worklist: list[tuple[MeetingRecord, Path]] = []
+    for rec in records:
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             n_skipped += 1
             continue
@@ -2562,33 +2574,43 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             print(f"Skipping existing cleaned transcript: {out_path}")
             n_skipped += 1
             continue
-        if args.dry_run:
+        worklist.append((rec, out_path))
+
+    worklist = worklist[: args.max or None]
+
+    if args.dry_run:
+        for rec, out_path in worklist:
             print(f"Would clean {rec.merged_path} with {model} -> {out_path}")
-            continue
-        text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
+        print(f"\nDry run: {len(worklist)} would be cleaned, {n_skipped} skipped.")
+        return
+
+    total = len(worklist)
+    progress = ProgressReporter(total, verb="Cleaning", model=model)
+    for idx, (rec, out_path) in enumerate(worklist, start=1):
+        merged_path = rec.merged_path or ""  # worklist guarantees a real path
+        text = Path(merged_path).read_text(encoding="utf-8", errors="replace")
         progress.start_item(idx, rec.title)
         cleaned = call_model_text(cfg, args, client=client, model=model,
                                   messages=chat_messages(prompt, text),
-                                  operation="clean transcript", label=rec.merged_path)
+                                  operation="clean transcript", label=merged_path)
         if cleaned is None:  # error, ignore-model-errors set
             n_failed += 1
             progress.finish_item(ok=False)
             if journal:
-                journal.mark(rec.merged_path, "failed")
+                journal.mark(merged_path, "failed")
             continue
         atomic_write_text(out_path, cleaned.strip() + "\n")
         print(f"Wrote {out_path}")
         n_done += 1
         progress.finish_item(ok=True)
         if journal:
-            journal.mark(rec.merged_path, "done")
-    if not args.dry_run:
-        if journal and n_failed == 0:
-            journal.finish()
-        progress.summary()
-        print(f"\nDone: {n_done} cleaned, {n_skipped} skipped, {n_failed} failed.")
-        if n_failed:
-            print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
+            journal.mark(merged_path, "done")
+    if journal and n_failed == 0:
+        journal.finish()
+    progress.summary()
+    print(f"\nDone: {n_done} cleaned, {n_skipped} skipped, {n_failed} failed.")
+    if n_failed:
+        print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
 
 
 def cmd_clean_diagnostics(args: argparse.Namespace, cfg: Config) -> None:
@@ -3554,6 +3576,15 @@ def main() -> None:
         args.input_dir = None
     if not hasattr(args, "output_dir"):
         args.output_dir = None
+    # Validate --date-range eagerly so a malformed value (e.g. a valid-format but
+    # out-of-range date like 2026-13) produces a clean error instead of an
+    # uncaught traceback from deep inside a command handler.
+    dr = getattr(args, "date_range", None)
+    if dr:
+        try:
+            parse_date_range(dr)
+        except (ValueError, argparse.ArgumentTypeError) as exc:
+            raise SystemExit(f"ERROR: invalid --date-range {dr!r}: {exc}")
     args.func(args, cfg)
 
 
