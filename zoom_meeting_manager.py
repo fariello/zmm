@@ -1885,20 +1885,24 @@ def render_summary_text(payload: dict[str, Any]) -> str:
             lines.append(f"- {item}")
         lines.append("")
 
-    # Detailed notes
-    detailed = model_out.get("detailed_notes", []) or []
+    # Detailed notes — either a markdown string or legacy array of {topic, notes}
+    detailed = model_out.get("detailed_notes", "")
     if detailed:
         lines.append("## Detailed Notes")
         lines.append("")
-        for section in detailed:
-            if isinstance(section, dict):
-                lines.append(f"### {section.get('topic', 'Notes')}")
-                lines.append("")
-                lines.append(section.get("notes", ""))
-                lines.append("")
-            else:
-                lines.append(str(section))
-                lines.append("")
+        if isinstance(detailed, str):
+            lines.append(detailed)
+        elif isinstance(detailed, list):
+            # Legacy format: array of {topic, notes} objects
+            for section in detailed:
+                if isinstance(section, dict):
+                    lines.append(f"### {section.get('topic', 'Notes')}")
+                    lines.append("")
+                    lines.append(section.get("notes", ""))
+                    lines.append("")
+                else:
+                    lines.append(str(section))
+                    lines.append("")
 
     # LLM notes
     notes = model_out.get("llm_notes", {})

@@ -148,21 +148,8 @@
           "description": "Attendee information extracted from transcript speaker labels and references."
         },
         "detailed_notes": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "topic": {
-                "type": "string",
-                "description": "Topic or section heading."
-              },
-              "notes": {
-                "type": "string",
-                "description": "Detailed notes for this topic including discussion points, technical details, rationale, dependencies, blockers, and concerns."
-              }
-            }
-          },
-          "description": "Detailed meeting notes organized by topic. Include anything important for future reference that doesn't fit in the structured fields above."
+          "type": "string",
+          "description": "Comprehensive detailed meeting notes as a single markdown string. Use ### headings for topic sections, bullet points, and full paragraphs. This should be the longest field in the output for any substantive meeting. Capture full context, rationale, specific facts, arguments, technical details, disagreements, and anything needed to reconstruct the discussion months later."
         },
         "llm_notes": {
           "type": "object",

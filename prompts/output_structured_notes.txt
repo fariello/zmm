@@ -32,12 +32,7 @@ Return your response as strict JSON matching this exact structure. Do not includ
     "mentioned": ["People mentioned but not clearly present"],
     "uncertain": ["People whose presence is ambiguous"]
   },
-  "detailed_notes": [
-    {
-      "topic": "Topic heading",
-      "notes": "Discussion points, technical details, rationale, dependencies, blockers, concerns."
-    }
-  ],
+  "detailed_notes": "Full detailed meeting notes as a single markdown string. Use ### headings for topics, bullet points, and multiple paragraphs. Be comprehensive.",
   "llm_notes": {
     "assumptions": ["Assumptions made while summarizing"],
     "uncertain_corrections": ["Transcript corrections that are plausible but uncertain"],
@@ -52,18 +47,18 @@ Rules for each field:
 - decisions: Only items the transcript clearly supports as decided. Use "tentative" for likely-but-unconfirmed.
 - action_items: Only items someone clearly accepted or was assigned. Use null for unknown fields.
 - attendees.present: Only people who clearly spoke or were directly addressed.
-- detailed_notes: THIS IS THE MOST IMPORTANT FIELD. It must be comprehensive and detailed.
-  Organize by topic/theme. Each topic should have a substantive "notes" field that captures:
+- detailed_notes: THIS IS THE MOST IMPORTANT FIELD. A single markdown string.
+  Write comprehensive, detailed meeting notes using ### headings for topics,
+  bullet points, and full paragraphs. Must capture:
   - Full context and rationale behind decisions
   - Specific facts, data, numbers, names, and references mentioned
   - Arguments made and positions taken by specific people
   - Technical details, system names, project names, organizational details
   - Disagreements, concerns, and nuance
   - Anything a reader would need to understand the meeting without having attended
-  Do NOT summarize the detailed notes down to one-liners. Each topic's notes should be
-  multiple paragraphs if the discussion warranted it. Preserve enough specificity that
-  the notes remain useful for search, retrieval, and follow-up months later.
-  Use bullet points within the notes string where helpful for readability.
+  Do NOT compress into brief summaries. Write at the level of detail someone
+  would need to reconstruct the discussion months later. This field should be
+  the longest part of the output for any substantive meeting.
 - llm_notes: Be transparent about uncertainty. This helps the user know what to verify.
   Include: uncertain transcript corrections, unclear names/terms, uncertain speaker
   attribution, ambiguous references, possible transcription errors with suggested
