@@ -7,19 +7,21 @@ All notable changes to zmm are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.0] - 2026-06-06
 
-Work landed after the `v0.1.0` tag. These changes are on `master` and will be
-folded into the next dated release section when cut.
+Initial release. Standalone `zmm` extracted from a larger repository, then
+hardened across correctness, security, tests, docs, usability, and packaging.
 
-### Added
+### Cost, progress & reliability
 - `list meetings --has KIND` filters to meetings that HAVE a given artifact:
   `raw`, `merged`, `cleaned`, `summary`, `summary-json`, or `json` (alias for
   `summary-json`, i.e. a `.summary.json` sidecar). The positive inverse of
   `list missing-*`.
 - `summarize`/`clean` send an output-token budget (`max_tokens`, default 16000;
   `--max-output-tokens N`, 0 = no cap) so long summaries are not silently
-  truncated by a provider's small default cap.
+  truncated by a provider's small default cap. Truncated responses
+  (`finish_reason == 'length'`) are detected and reported as a specific,
+  actionable error instead of an opaque `JSONDecodeError`.
 - Per-item progress for `summarize`/`clean` shows a wall-clock timestamp,
   per-item duration, running elapsed, ETA, running cost, and projected total
   cost, plus a final total-time/total-cost line. Cost uses real API `usage`
@@ -29,35 +31,29 @@ folded into the next dated release section when cut.
   includes a projected OUTPUT cost (summarize ~0.5x input, clean ~1x input),
   not just input. The `estimate` command gained a "Proj. Output Tokens" column
   and renamed its cost column to "Est. Total Cost".
-
-### Fixed
-- Model responses truncated at the output-token limit are detected
-  (`finish_reason == 'length'`) and reported as a specific, actionable error
-  instead of an opaque `JSONDecodeError: Expecting value: line 1 column 1`.
 - Error messages give failure-specific "Next:" guidance (truncation, invalid
   JSON, auth, not-found, rate-limit, timeout).
-- A valid-but-non-object model reply (JSON array/number/string) is now treated
-  as a parse failure instead of crashing summary rendering with `AttributeError`.
+- A valid-but-non-object model reply (JSON array/number/string) is treated as a
+  parse failure instead of crashing summary rendering with `AttributeError`.
 - An out-of-range `--date-range` (e.g. `2026-13`) exits with a clean error
   instead of an uncaught `ValueError` traceback.
 - `clean` sizes its progress/ETA/projected-cost and applies `--max` against the
-  set of transcripts actually processed (not records that get skipped).
+  set of transcripts actually processed; `--dry-run` no longer creates empty
+  output directories.
 
-### Security
+### Security & privacy
 - `summarize`/`clean` warn once if `base_url` uses non-localhost `http://`
   (the API key would be sent in cleartext).
 - `init config` writes the file with mode 0600 when it embeds a literal API key.
+- Diagnostics may contain transcript content; documented retention/cleanup.
 
-### Internal / tests
+### Tests & CI
 - Hermetic cost/progress tests (no longer read machine-local `opencode.json`);
   added end-to-end tests for `estimate` and `list`, and a schema-conformance
   test for generated summary `.json` (uses `jsonschema` when available;
   `jsonschema` added to the `[dev]` extra).
-
-## [0.1.0] - 2026-06-06
-
-Initial release. Standalone `zmm` extracted from a larger repository, then
-hardened across correctness, security, tests, docs, usability, and packaging.
+- CI tests on Python 3.10–3.14, installs via `.[dev]`, and adds a build+install
+  smoke job.
 
 ### Packaging (Part-6 audit)
 - Bundled `prompts/` and `schemas/` now ship in the wheel/sdist (made

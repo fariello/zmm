@@ -406,7 +406,8 @@ For maintainers cutting a release:
 # 1. Bump the version in one place:
 #    zoom_meeting_manager.py -> __version__ = "X.Y.Z"
 #    (pyproject reads it dynamically; no second edit needed)
-# 2. Move CHANGELOG [Unreleased] into a dated [X.Y.Z] section.
+# 2. Add a dated [X.Y.Z] section to CHANGELOG.md (accumulate changes there as
+#    you go, or under a temporary [Unreleased] heading you rename at release).
 # 3. Run the full validation:
 python -m pytest tests/ -q
 # 4. Build and inspect artifacts (prompts/ and schemas/ must be present):
