@@ -3548,8 +3548,14 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sum_sub.add_parser(name)
         add_common(sp)
         add_model_options(sp)
-        sp.add_argument("--summarization-source", choices=("cleaned_if_available", "cleaned", "required_cleaned", "merged"))
-        sp.add_argument("--only-cleaned-transcripts", action="store_true")
+        sp.add_argument("--summarization-source",
+                        choices=("cleaned_if_available", "cleaned", "required_cleaned", "merged"),
+                        help="Which transcript to summarize when both exist: "
+                             "cleaned_if_available (default), cleaned (prefer cleaned, "
+                             "skip if none), required_cleaned (error if none), or merged.")
+        sp.add_argument("--only-cleaned-transcripts", action="store_true",
+                        help="Only summarize meetings that have a cleaned transcript "
+                             "(equivalent to --summarization-source required_cleaned).")
         sp.set_defaults(func=cmd_summarize, summarize_object=name)
     p_files = sum_sub.add_parser("files")
     add_common(p_files)

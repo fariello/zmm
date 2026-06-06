@@ -146,7 +146,7 @@ Every compound command also accepts `help` (e.g. `zmm list help`).
 |---------|-------------|
 | `zmm list meetings` | List all discovered meetings |
 | `zmm list meetings --has raw\|merged\|cleaned\|summary\|summary-json\|json` | Only meetings that HAVE the given artifact (`json` = a `.summary.json` sidecar) |
-| `zmm list missing [merged\|summaries\|raw]` | Overview table of missing artifacts |
+| `zmm list missing [all\|merged\|transcripts\|summaries\|summary-json\|raw]` | Overview table of missing artifacts (default: all) |
 | `zmm list missing-merged` / `-summaries` / `-summary-json` / `-raw` | Focused missing-item lists |
 | `zmm list models [--provider NAME] [--show-stale]` | List models per provider with pricing |
 | `zmm list prompts` | List core + augmentation + example prompts |
@@ -331,8 +331,25 @@ zmm extract me items       # both
 --yes                   Skip confirmation prompts
 --no-context            Don't send personal augmentation files to the model
 --resume                Skip items completed in a prior interrupted run
+--ignore-model-errors   Continue past model/API errors (warn and skip the item)
 --debug                 Print diagnostic information
 --version               Show version
+```
+
+Model-call commands (`summarize`, `clean`, `fix missing summaries`) also accept:
+
+```
+--summarization-source MODE   Which transcript to summarize when both exist:
+                              cleaned_if_available (default), cleaned,
+                              required_cleaned, merged
+--only-cleaned-transcripts    Only summarize meetings that have a cleaned
+                              transcript (= required_cleaned)
+--prompt-layer NAME           Add a prompt layer by name (repeatable; skips
+                              the default layer assembly)
+--prompt-context / --prompt-person / --prompt-correction NAME
+                              Add a context / person / corrections prompt layer
+                              by name (repeatable). All three append to the same
+                              augmentation list as --prompt-layer.
 ```
 
 ## Resuming Interrupted Runs
@@ -366,7 +383,8 @@ endpoint. Be aware of what leaves your machine:
   Use `--no-context` to suppress them for a given run.
 - **Endpoint** — data goes to whatever `base_url` is configured (or the
   default OpenAI endpoint). Point zmm only at endpoints you trust with
-  meeting content.
+  meeting content. Prefer `https://`; zmm warns if `base_url` uses a
+  non-localhost `http://` URL (your API key would be sent in cleartext).
 
 zmm prompts for confirmation before bulk model operations and shows an
 estimated token count and cost. Use `--dry-run` to preview without sending

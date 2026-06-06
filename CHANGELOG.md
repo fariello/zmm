@@ -7,6 +7,53 @@ All notable changes to zmm are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+Work landed after the `v0.1.0` tag. These changes are on `master` and will be
+folded into the next dated release section when cut.
+
+### Added
+- `list meetings --has KIND` filters to meetings that HAVE a given artifact:
+  `raw`, `merged`, `cleaned`, `summary`, `summary-json`, or `json` (alias for
+  `summary-json`, i.e. a `.summary.json` sidecar). The positive inverse of
+  `list missing-*`.
+- `summarize`/`clean` send an output-token budget (`max_tokens`, default 16000;
+  `--max-output-tokens N`, 0 = no cap) so long summaries are not silently
+  truncated by a provider's small default cap.
+- Per-item progress for `summarize`/`clean` shows a wall-clock timestamp,
+  per-item duration, running elapsed, ETA, running cost, and projected total
+  cost, plus a final total-time/total-cost line. Cost uses real API `usage`
+  tokens (input+output) priced from `opencode.json`. Progress prints to stderr
+  so stdout json/csv output stays machine-parseable.
+- Pre-run cost estimate (confirmation prompt and the `estimate` command) now
+  includes a projected OUTPUT cost (summarize ~0.5x input, clean ~1x input),
+  not just input. The `estimate` command gained a "Proj. Output Tokens" column
+  and renamed its cost column to "Est. Total Cost".
+
+### Fixed
+- Model responses truncated at the output-token limit are detected
+  (`finish_reason == 'length'`) and reported as a specific, actionable error
+  instead of an opaque `JSONDecodeError: Expecting value: line 1 column 1`.
+- Error messages give failure-specific "Next:" guidance (truncation, invalid
+  JSON, auth, not-found, rate-limit, timeout).
+- A valid-but-non-object model reply (JSON array/number/string) is now treated
+  as a parse failure instead of crashing summary rendering with `AttributeError`.
+- An out-of-range `--date-range` (e.g. `2026-13`) exits with a clean error
+  instead of an uncaught `ValueError` traceback.
+- `clean` sizes its progress/ETA/projected-cost and applies `--max` against the
+  set of transcripts actually processed (not records that get skipped).
+
+### Security
+- `summarize`/`clean` warn once if `base_url` uses non-localhost `http://`
+  (the API key would be sent in cleartext).
+- `init config` writes the file with mode 0600 when it embeds a literal API key.
+
+### Internal / tests
+- Hermetic cost/progress tests (no longer read machine-local `opencode.json`);
+  added end-to-end tests for `estimate` and `list`, and a schema-conformance
+  test for generated summary `.json` (uses `jsonschema` when available;
+  `jsonschema` added to the `[dev]` extra).
+
 ## [0.1.0] - 2026-06-06
 
 Initial release. Standalone `zmm` extracted from a larger repository, then
@@ -54,42 +101,6 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   were wrongly reported as missing (e.g. 445 instead of 37).
 - `list missing` / `list meetings` print a trailing count of matching meetings
   (table output only).
-- Model responses truncated at the output-token limit are now detected
-  (`finish_reason == 'length'`) and reported as a specific, actionable error
-  ("output was truncated; raise --max-output-tokens") instead of an opaque
-  `JSONDecodeError: Expecting value: line 1 column 1`. This was the real cause
-  of summarize failures on long meetings.
-- Error messages now give failure-specific "Next:" guidance (truncation,
-  invalid JSON, auth, not-found, rate-limit, timeout) instead of always saying
-  "Check API key, endpoint, model name, network access."
-
-### Listing (post-tag)
-- `list meetings --has KIND` filters to meetings that HAVE a given artifact:
-  `raw`, `merged`, `cleaned`, `summary`, `summary-json`, or `json` (alias for
-  `summary-json`, i.e. a `.summary.json` sidecar). This is the positive inverse
-  of `list missing-*` — e.g. `zmm list meetings --has json` shows every meeting
-  that already has a structured summary sidecar.
-
-### Reliability & progress (post-tag)
-- `summarize` and `clean` now send an output-token budget (`max_tokens`,
-  default 16000) so long summaries are not silently truncated by a provider's
-  small default cap. Override with `--max-output-tokens N` (0 = no cap).
-- Per-item progress for `summarize`/`clean` now shows a wall-clock timestamp,
-  per-item duration, running elapsed time, ETA, running cost, and projected
-  total cost. A final line reports total time and total cost with the actual
-  input/output token counts. Cost uses real API `usage` tokens priced from the
-  per-model rates in `opencode.json` (so it counts output tokens, unlike the
-  input-only pre-run estimate). Progress now prints to stderr so stdout
-  json/csv output stays machine-parseable.
-- The pre-run cost estimate (confirmation prompt and the `estimate` command)
-  now includes a projected OUTPUT cost, not just input. Output tokens are
-  projected per operation (summarize ~0.5x input, clean ~1x input) and priced
-  with the model's output rate. The confirmation now reads e.g. "Est. tokens:
-  N in + ~M out (projected)" / "Est. cost: $X (incl. projected output)"; it
-  falls back to "(input only)" when no output rate is known. The `estimate`
-  command gained "Proj. Output Tokens" and renamed its cost column to
-  "Est. Total Cost". Previously the estimate counted input only and could be
-  ~5x too low (e.g. $0.036 estimated vs $0.17 actual on a real summary).
 
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line
