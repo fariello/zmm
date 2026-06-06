@@ -99,10 +99,8 @@ class Config:
     config_path: str | None = None
     input_dir: str | None = None
     output_dir: str | None = None
-    source: str = "zoom"
     api_key: str | None = None
     base_url: str | None = None
-    no_temperature: bool = False
     models: dict[str, str] = field(default_factory=dict)
     prompts: dict[str, str] = field(default_factory=dict)
 
@@ -112,7 +110,6 @@ class Config:
     auto_clean_before_summarize: bool = False
     write_processing_json: bool = True
     aggregate_period: str = "auto"
-    include_all_model_summaries: bool = True
     confirm_model_calls: bool = True
     color: str = "auto"
 
@@ -357,12 +354,9 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
         if parser.has_section("paths"):
             cfg.input_dir = parser.get("paths", "input_dir", fallback=None) or None
             cfg.output_dir = parser.get("paths", "output_dir", fallback=None) or None
-        if parser.has_section("source"):
-            cfg.source = parser.get("source", "type", fallback=cfg.source)
         if parser.has_section("api"):
             cfg.base_url = parser.get("api", "base_url", fallback=None) or None
             cfg.api_key = expand_env(parser.get("api", "api_key", fallback=None))
-            cfg.no_temperature = parser.getboolean("api", "no_temperature", fallback=False)
         if parser.has_section("models"):
             cfg.models = {k: v for k, v in parser.items("models") if v.strip()}
         if parser.has_section("prompts"):
@@ -380,7 +374,6 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
         if parser.has_section("output"):
             cfg.write_processing_json = parser.getboolean("output", "write_processing_json", fallback=True)
             cfg.aggregate_period = parser.get("output", "aggregate_period", fallback=cfg.aggregate_period)
-            cfg.include_all_model_summaries = parser.getboolean("output", "include_all_model_summaries", fallback=True)
             cfg.confirm_model_calls = parser.getboolean("output", "confirm_model_calls", fallback=True)
             cfg.color = parser.get("output", "color", fallback=cfg.color)
     else:
@@ -393,7 +386,6 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
             raw[key.strip()] = val.strip()
         cfg.base_url = raw.get("base_url") or None
         cfg.api_key = expand_env(raw.get("api_key"))
-        cfg.no_temperature = raw.get("no_temperature", "").lower() in ("true", "yes", "1")
         if raw.get("default_model"):
             cfg.models["summary"] = raw["default_model"]
 
@@ -1330,9 +1322,6 @@ base_url = {base_url}
 # API key. Supports: literal, {{env:VAR_NAME}}, $VAR, ${{VAR}}
 api_key = {api_key}
 
-# Set true if your provider doesn't support the temperature parameter.
-no_temperature = false
-
 """
     else:
         api_section = """
@@ -1342,7 +1331,6 @@ no_temperature = false
 # [api]
 # base_url =
 # api_key =
-# no_temperature = false
 
 """
 
@@ -1373,13 +1361,6 @@ input_dir = {input_dir}
 #   Cleaned-Transcripts-YYYY/  — LLM-cleaned transcripts
 #   to-delete/                 — raw dirs moved by 'zmm delete raw'
 output_dir = {output_dir}
-
-
-# ─── Source ──────────────────────────────────────────────────────────────────
-[source]
-
-# Transcript source type. Currently only "zoom" is implemented.
-type = zoom
 
 {api_section}
 # ─── Models ──────────────────────────────────────────────────────────────────
@@ -1433,11 +1414,8 @@ auto_clean_before_summarize = false
 # Write Processing-YYYY.json metadata after state-changing commands.
 write_processing_json = true
 
-# Aggregate export period for 'zmm export aggregates': auto, year, month, range
+# Default grouping for 'zmm export aggregates': auto, year, month
 aggregate_period = auto
-
-# Include summaries from all models in aggregate files (false = only configured model).
-include_all_model_summaries = true
 
 # Prompt for confirmation before bulk model calls (false = same as --yes).
 confirm_model_calls = true
@@ -1691,14 +1669,18 @@ def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
 def cmd_export(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
     output = Path(cfg.output_dir or args.output_dir or ".")
+    period = getattr(args, "period", None) or cfg.aggregate_period or "auto"
     groups: dict[str, list[MeetingRecord]] = {}
     for rec in records:
-        if args.period == "month":
+        if period == "month":
             prefix = (rec.meeting_date or "unknown")[:7]
-        elif args.period == "range" and args.date_range:
-            start, end = parse_date_range(args.date_range)
-            prefix = f"{start.isoformat()}-to-{end.isoformat()}" if start and end else "range"
+        elif period == "auto":
+            # Auto: group by year, but also by month within each year
+            prefix = (rec.meeting_date or "unknown")[:4]
+            groups.setdefault(prefix, []).append(rec)
+            prefix = (rec.meeting_date or "unknown")[:7]
         else:
+            # year
             prefix = (rec.meeting_date or "unknown")[:4]
         groups.setdefault(prefix, []).append(rec)
 
@@ -1895,10 +1877,55 @@ def cmd_extract(args: argparse.Namespace, cfg: Config) -> None:
     render_table(["Date", "Title", "Source", "Line", "Text"], rows, fmt=args.format, color=supports_color(args.color or cfg.color), plain=args.plain)
 
 
+def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
+    """Auto-clean merged transcripts that don't have cleaned versions yet."""
+    to_clean = [r for r in records if r.has_merged and not r.has_cleaned]
+    if not to_clean:
+        return records
+    cleanup_model = get_model(cfg, args, "cleanup")
+    prompt = load_prompt(cfg.prompts.get("cleanup") or "cleanup_transcript")
+    # Build augmentation including corrections (cleanup is the primary consumer)
+    aug_prompt, _ = build_prompt(cfg, args, "cleanup")
+    full_prompt = prompt + "\n\n" + aug_prompt if aug_prompt != prompt else prompt
+    client = client_for(cfg)
+    files = [r.merged_path for r in to_clean if r.merged_path]
+    print(f"  Auto-cleaning {len(files)} transcripts before summarization...")
+    confirm_model_operation(args, cfg, "auto-clean", files, cleanup_model)
+    for rec in to_clean:
+        if not rec.merged_path or not Path(rec.merged_path).is_file():
+            continue
+        if args.dry_run:
+            print(f"  Would auto-clean {rec.merged_path} with {cleanup_model}")
+            continue
+        year = (rec.meeting_date or str(date.today()))[:4]
+        out_dir = Path(cfg.output_dir or args.output_dir or ".") / f"Cleaned-Transcripts-{year}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{Path(rec.merged_path).stem}.{cleanup_model.replace('/', '--')}.cleaned.txt"
+        if out_path.exists():
+            rec.cleaned_paths.append(str(out_path))
+            continue
+        text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
+        try:
+            response = client.chat.completions.create(model=cleanup_model, messages=[{"role": "system", "content": full_prompt}, {"role": "user", "content": text}])
+            cleaned = response.choices[0].message.content or ""
+        except Exception as exc:
+            print_model_error(exc, model=cleanup_model, operation="auto-clean", label=rec.merged_path, cfg=cfg)
+            if args.ignore_model_errors:
+                continue
+            raise SystemExit(1)
+        out_path.write_text(cleaned.strip() + "\n", encoding="utf-8")
+        rec.cleaned_paths.append(str(out_path))
+        print(f"  Wrote {out_path}")
+    return records
+
+
 def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     records = merge_raw_records(args, cfg) if args.summarize_object == "raw" else get_records(args, cfg)
     if args.summarize_object == "files":
         records = records_from_files(args.files)
+    # Auto-clean before summarizing if configured
+    if cfg.auto_clean_before_summarize:
+        records = _auto_clean_if_needed(records, args, cfg)
     model = get_model(cfg, args, "summary")
     planned_sources = [choose_summary_source(r, cfg, args) for r in records]
     confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s], model)
@@ -2346,7 +2373,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_help_subcommand(export_sub, p_export)
     p_agg = export_sub.add_parser("aggregates")
     add_common(p_agg)
-    p_agg.add_argument("--period", choices=("auto", "year", "month", "range"), default="auto")
+    p_agg.add_argument("--period", choices=("auto", "year", "month"), default=None,
+                       help="Grouping period for aggregates (default: from config, or 'auto').")
     p_agg.set_defaults(func=cmd_export)
 
     p_init = sub.add_parser("init")

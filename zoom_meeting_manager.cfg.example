@@ -36,13 +36,6 @@ input_dir =
 output_dir =
 
 
-# ─── Source ──────────────────────────────────────────────────────────────────
-[source]
-
-# Transcript source type. Currently only "zoom" is implemented.
-type = zoom
-
-
 # ─── API ─────────────────────────────────────────────────────────────────────
 [api]
 
@@ -63,10 +56,6 @@ base_url =
 #
 # If blank, zmm reads from ~/.config/opencode/opencode.json.
 api_key =
-
-# Some providers don't support the temperature parameter.
-# Set to true to omit it from API calls.
-no_temperature = false
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────
@@ -109,8 +98,10 @@ aliases =
 #   merged               — always use the canonical merged transcript
 summarization_source = cleaned_if_available
 
-# Whether to automatically run LLM cleanup before summarizing.
-# Usually false — run 'zmm clean transcripts' separately first.
+# Automatically run LLM cleanup on merged transcripts before summarizing,
+# when no cleaned version exists yet. This adds an extra model call per
+# un-cleaned transcript. Set to true if you always want cleaned input.
+# Usually false — run 'zmm clean transcripts' as a separate step first.
 auto_clean_before_summarize = false
 
 
@@ -120,12 +111,11 @@ auto_clean_before_summarize = false
 # Write Processing-YYYY.json metadata after state-changing commands.
 write_processing_json = true
 
-# Aggregate export period: auto, year, month, range
+# Default grouping period for 'zmm export aggregates':
+#   auto  — group by both year and month
+#   year  — one set of files per year
+#   month — one set of files per month
 aggregate_period = auto
-
-# Include summaries from all models in aggregate files.
-# Set to false to only include the configured summary model.
-include_all_model_summaries = true
 
 # Prompt for confirmation before model-backed bulk operations.
 # Set to false to suppress (same as --yes).
