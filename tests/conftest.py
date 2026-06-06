@@ -82,6 +82,20 @@ def fake_client(monkeypatch):
     return _install
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_model_costs(monkeypatch):
+    """Neutralize machine-local model pricing for all tests.
+
+    Cost/progress code reads `~/.config/opencode/opencode.json` via
+    `_load_model_costs`. Without this, cost output (and `_cost_rate`'s substring
+    matching) would depend on whatever models the developer/CI machine happens
+    to have configured, making cost/progress tests non-deterministic. Tests that
+    need specific pricing monkeypatch `_load_model_costs` themselves (their patch
+    runs inside the test body and overrides this default).
+    """
+    monkeypatch.setattr(zmm, "_load_model_costs", lambda: {})
+
+
 @pytest.fixture
 def parse_args():
     """Parse a zmm argv list into a Namespace using the real parser."""

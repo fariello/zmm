@@ -32,7 +32,7 @@ classifiers = [
 
 [project.optional-dependencies]
 api = ["openai>=1.0"]
-dev = ["openai>=1.0", "pytest>=7.0", "pytest-cov>=4.0", "build>=1.0"]
+dev = ["openai>=1.0", "pytest>=7.0", "pytest-cov>=4.0", "build>=1.0", "jsonschema>=4.0"]
 
 [project.scripts]
 zmm = "zoom_meeting_manager:main"

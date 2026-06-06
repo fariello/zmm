@@ -532,6 +532,81 @@ def test_call_model_text_ignore_errors_returns_none(monkeypatch):
 
 # ----------------------------- truncation detection (finish_reason='length') ----------------------------- #
 
+# ----------------------------- coverage: estimate / list / schema (S3) ----------------------------- #
+
+def test_cmd_estimate_end_to_end(tmp_path, monkeypatch, capsys):
+    # 20260606-172943-S3-T1: exercise the estimate command body (was ~5% cov).
+    monkeypatch.setattr(zmm, "_load_model_costs",
+                        lambda: {"gpt-4o": {"input": 2.0, "output": 6.0}})
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
+    cfg = _summary_cfg(output_dir)
+    args = _ns(output_dir=str(output_dir), estimate_object="summarize", format="json")
+    zmm.cmd_estimate(args, cfg)
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data and data[0]["Operation"] == "summarize"
+    assert data[0]["Files"] == 1
+    # Output column present (projected) and a total cost string.
+    assert "Est. Total Cost" in data[0]
+    assert data[0]["Est. Total Cost"].startswith("$")
+
+
+def test_cmd_list_has_json_end_to_end(tmp_path, capsys):
+    # 20260606-172943-S3-T2: cmd_list --has json filters to meetings with a
+    # .summary.json sidecar, end-to-end (not just the filter helper).
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True, with_summary=True)
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), list_object="meetings", has_kind="json", format="json")
+    zmm.cmd_list(args, cfg)
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1  # the one meeting has a json sidecar
+
+    # And a meeting WITHOUT a json sidecar is excluded.
+    _, out2 = make_meeting_tree(tmp_path / "b", with_raw=False, with_merged=True)
+    cfg2 = zmm.Config(output_dir=str(out2))
+    args2 = _ns(output_dir=str(out2), list_object="meetings", has_kind="json", format="json")
+    zmm.cmd_list(args2, cfg2)
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cmd_list_missing_summaries_end_to_end(tmp_path, capsys):
+    # 20260606-172943-S3-T2: missing-summaries lists meetings without a summary.
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
+    cfg = _summary_cfg(output_dir)
+    args = _ns(output_dir=str(output_dir), list_object="missing",
+               missing_kind="summaries", format="json")
+    zmm.cmd_list(args, cfg)
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1  # merged-only meeting has no summary
+
+
+def test_generated_summary_payload_conforms_to_schema(tmp_path, fake_client):
+    # 20260606-172943-S3-T4: a payload written by write_summary_outputs must
+    # conform to schemas/summary.json. Uses jsonschema if importable; otherwise
+    # falls back to a key+type check (no hard dependency added).
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
+    fake_client(json.dumps(VALID_MODEL_OUTPUT))
+    cfg = _summary_cfg(output_dir)
+    args = _ns(output_dir=str(output_dir), summarize_object="merged",
+               summarization_source="merged")
+    zmm.cmd_summarize(args, cfg)
+    payload = json.loads(next((output_dir / "Summaries-2026").glob("*.summary.json")).read_text())
+
+    schema_path = Path(zmm.__file__).resolve().parent / "schemas" / "summary.json"
+    schema = json.loads(schema_path.read_text())
+    try:
+        import jsonschema  # type: ignore
+        jsonschema.validate(instance=payload, schema=schema)  # raises on drift
+    except ImportError:
+        # Fallback: structural + type checks against the schema's required keys.
+        assert set(schema["required"]) <= set(payload)  # meeting, model_output
+        mo = payload["model_output"]
+        for k in schema["properties"]["model_output"]["required"]:
+            assert k in mo, f"missing model_output key: {k}"
+        assert isinstance(payload["meeting"], dict)
+        assert isinstance(mo["key_takeaways"], list)
+
+
 # ----------------------------- security hygiene (S2-S1 / S2-S2) ----------------------------- #
 
 def test_init_config_env_key_not_chmodded(tmp_path, monkeypatch):
