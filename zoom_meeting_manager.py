@@ -2236,6 +2236,48 @@ def _cost_rate(model: str, direction: str) -> float | None:
     return float(rate) if rate else None
 
 
+# Rough output-to-input token ratios per operation, used only to make the
+# PRE-RUN cost estimate include output (the actual run reports true usage).
+# Calibrated against observed runs (summarize ~0.5x; clean rewrites ~1:1).
+_OUTPUT_RATIO = {
+    "summarize": 0.5,
+    "clean": 1.0,
+    "auto-clean": 1.0,
+}
+
+
+def _project_output_tokens(input_tokens: int, operation: str, args: argparse.Namespace) -> int:
+    """Estimate output tokens for a pre-run cost projection.
+
+    Operation-aware ratio of input tokens, capped by the effective
+    --max-output-tokens budget (per call is impossible to know here, so the cap
+    is applied to the total proportionally via the ratio only — the cap mainly
+    guards pathological inputs). Returns 0 if we have no basis.
+    """
+    ratio = _OUTPUT_RATIO.get(operation, 0.5)
+    return int(input_tokens * ratio)
+
+
+def _estimate_total_cost(input_tokens: int, output_tokens: int, model: str) -> tuple[str | None, bool]:
+    """Return (formatted total cost, output_priced).
+
+    Combines input cost (always, if priced) with projected output cost (if the
+    model has an output rate). `output_priced` is True when output pricing was
+    found and included, so callers can label the figure honestly.
+    """
+    in_rate = _cost_rate(model, "input")
+    out_rate = _cost_rate(model, "output")
+    if in_rate is None and out_rate is None:
+        return (None, False)
+    total = 0.0
+    if in_rate is not None:
+        total += (input_tokens / 1_000_000) * in_rate
+    output_priced = out_rate is not None
+    if output_priced:
+        total += (output_tokens / 1_000_000) * out_rate
+    return (f"${total:.4f}", output_priced)
+
+
 def _fmt_hms(seconds: float) -> str:
     """Format a duration as H:MM:SS or M:SS."""
     seconds = max(0, int(round(seconds)))
@@ -2336,10 +2378,14 @@ def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
     # Resolve model name for cost lookup (extract is local-only; uses summary model as reference)
     model_key = {"summarize": "summary", "clean": "cleanup"}.get(model_task, "summary")
     model = cfg.models.get(model_key) or cfg.models.get("summary") or "o4-mini"
-    cost_str = _estimate_cost(tokens, model, "input") or "n/a"
+    out_tokens = _project_output_tokens(tokens, model_task, args)
+    total_cost, output_priced = _estimate_total_cost(tokens, out_tokens, model)
+    total_str = total_cost or "n/a"
 
-    headers = ["Operation", "Model", "Files", "Approx Input Tokens", "Est. Input Cost"]
-    rows = [[model_task, model, len(files), tokens, cost_str]]
+    headers = ["Operation", "Model", "Files", "Approx Input Tokens",
+               "Proj. Output Tokens", "Est. Total Cost"]
+    rows = [[model_task, model, len(files), tokens,
+             out_tokens if output_priced else "-", total_str]]
     render_table(headers, rows, fmt=args.format, color=supports_color(args.color or cfg.color), plain=args.plain)
 
 
@@ -3119,15 +3165,21 @@ def confirm_model_operation(args: argparse.Namespace, cfg: Config, operation: st
     if args.dry_run:
         return
     approx_tokens = sum(count_tokens_in_file(f) for f in files if Path(f).is_file())
-    cost_str = _estimate_cost(approx_tokens, model, "input") if model else None
+    out_tokens = _project_output_tokens(approx_tokens, operation, args) if model else 0
+    total_cost, output_priced = (
+        _estimate_total_cost(approx_tokens, out_tokens, model) if model else (None, False))
 
     print()
     print(f"  \033[1mOperation:\033[0m  {operation}")
     print(f"  \033[1mModel:\033[0m      {model or '(default)'}")
     print(f"  \033[1mFiles:\033[0m      {len(files)}")
-    print(f"  \033[1mEst. tokens:\033[0m {approx_tokens:,}")
-    if cost_str:
-        print(f"  \033[1mEst. cost:\033[0m   {cost_str} (input only)")
+    if output_priced:
+        print(f"  \033[1mEst. tokens:\033[0m {approx_tokens:,} in + ~{out_tokens:,} out (projected)")
+    else:
+        print(f"  \033[1mEst. tokens:\033[0m {approx_tokens:,}")
+    if total_cost:
+        label = "incl. projected output" if output_priced else "input only"
+        print(f"  \033[1mEst. cost:\033[0m   {total_cost} ({label})")
     print()
 
     max_tokens = getattr(args, "max_input_tokens", None)

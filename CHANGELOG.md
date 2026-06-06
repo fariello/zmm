@@ -74,6 +74,15 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   per-model rates in `opencode.json` (so it counts output tokens, unlike the
   input-only pre-run estimate). Progress now prints to stderr so stdout
   json/csv output stays machine-parseable.
+- The pre-run cost estimate (confirmation prompt and the `estimate` command)
+  now includes a projected OUTPUT cost, not just input. Output tokens are
+  projected per operation (summarize ~0.5x input, clean ~1x input) and priced
+  with the model's output rate. The confirmation now reads e.g. "Est. tokens:
+  N in + ~M out (projected)" / "Est. cost: $X (incl. projected output)"; it
+  falls back to "(input only)" when no output rate is known. The `estimate`
+  command gained "Proj. Output Tokens" and renamed its cost column to
+  "Est. Total Cost". Previously the estimate counted input only and could be
+  ~5x too low (e.g. $0.036 estimated vs $0.17 actual on a real summary).
 
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line

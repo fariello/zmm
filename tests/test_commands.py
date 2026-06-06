@@ -633,6 +633,52 @@ def test_progress_reporter_cost_from_usage(monkeypatch):
     assert "1,000,000 in + 1,000,000 out tokens" in out
 
 
+def test_estimate_total_cost_includes_output(monkeypatch):
+    monkeypatch.setattr(zmm, "_load_model_costs",
+                        lambda: {"m": {"input": 2.0, "output": 6.0}})
+    # 1M in + 1M out -> $2 + $6 = $8, output priced.
+    total, priced = zmm._estimate_total_cost(1_000_000, 1_000_000, "m")
+    assert priced is True
+    assert total == "$8.0000"
+
+
+def test_estimate_total_cost_input_only_when_no_output_rate(monkeypatch):
+    monkeypatch.setattr(zmm, "_load_model_costs",
+                        lambda: {"m": {"input": 2.0}})  # no output rate
+    total, priced = zmm._estimate_total_cost(1_000_000, 1_000_000, "m")
+    assert priced is False
+    assert total == "$2.0000"  # output ignored
+
+
+def test_estimate_total_cost_none_when_unpriced(monkeypatch):
+    monkeypatch.setattr(zmm, "_load_model_costs", lambda: {})
+    total, priced = zmm._estimate_total_cost(1000, 1000, "m")
+    assert total is None and priced is False
+
+
+def test_project_output_tokens_by_operation():
+    import argparse
+    args = argparse.Namespace()
+    assert zmm._project_output_tokens(1000, "summarize", args) == 500   # 0.5x
+    assert zmm._project_output_tokens(1000, "clean", args) == 1000      # 1.0x
+    assert zmm._project_output_tokens(1000, "auto-clean", args) == 1000
+    assert zmm._project_output_tokens(1000, "other", args) == 500       # default 0.5
+
+
+def test_confirm_shows_projected_output_cost(monkeypatch, tmp_path, capsys):
+    import argparse
+    monkeypatch.setattr(zmm, "_load_model_costs",
+                        lambda: {"m": {"input": 2.0, "output": 6.0}})
+    f = tmp_path / "t.txt"
+    f.write_text("hello world " * 100)
+    args = argparse.Namespace(dry_run=False, yes=True, max_input_tokens=None)
+    cfg = zmm.Config(api_key="k", confirm_model_calls=False)
+    zmm.confirm_model_operation(args, cfg, "summarize", [str(f)], model="m")
+    out = capsys.readouterr().out
+    assert "incl. projected output" in out
+    assert "out (projected)" in out
+
+
 def test_usage_from_response_variants():
     class U1:  # OpenAI naming
         prompt_tokens = 10
