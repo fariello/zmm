@@ -835,7 +835,21 @@ def discover_augmentation_files() -> list[tuple[str, Path]]:
     return found
 
 
-def build_prompt(cfg: Config, args: argparse.Namespace, task: str = "summary") -> tuple[str, str]:
+def _load_augmentation_content(path: Path) -> str:
+    """Load an augmentation file, stripping leading # comment lines."""
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return ""
+    lines = content.splitlines()
+    non_comment = []
+    for line in lines:
+        if line.startswith("#") and not non_comment:
+            continue  # skip leading comments
+        non_comment.append(line)
+    return "\n".join(non_comment).strip()
+
+
+def build_prompt(cfg: Config, args: argparse.Namespace, task: str = "summary", *, skip_corrections: bool = False) -> tuple[str, str]:
     """Build the full system prompt: core instructions + schema + user augmentation.
 
     Assembly order (always):
@@ -843,11 +857,14 @@ def build_prompt(cfg: Config, args: argparse.Namespace, task: str = "summary") -
       2. Output schema prompt (output_structured_notes.txt)
       3. User augmentation files from ~/.config/zmm/prompts/ (auto-appended)
 
+    If skip_corrections=True, the corrections.txt augmentation is omitted
+    (used when summarizing an already-cleaned transcript).
+
     The only way to fully replace the core prompt is --prompt-string or
     explicit --prompt-layer flags, which skip the default assembly.
     """
     # Check for explicit layer overrides (power-user escape hatch)
-    explicit_layers = []
+    explicit_layers: list[str] = []
     explicit_layers.extend(getattr(args, "prompt_layer", None) or [])
     explicit_layers.extend(getattr(args, "prompt_context", None) or [])
     explicit_layers.extend(getattr(args, "prompt_person", None) or [])
@@ -875,19 +892,13 @@ def build_prompt(cfg: Config, args: argparse.Namespace, task: str = "summary") -
     # 3. User augmentation (auto-appended from ~/.config/zmm/prompts/)
     aug_files = discover_augmentation_files()
     for name, path in aug_files:
-        content = path.read_text(encoding="utf-8").strip()
-        if content:
-            # Strip comment lines from top for cleaner prompt
-            lines = content.splitlines()
-            non_comment = []
-            for line in lines:
-                if line.startswith("#") and not non_comment:
-                    continue  # skip leading comments
-                non_comment.append(line)
-            clean = "\n".join(non_comment).strip()
-            if clean:
-                parts.append(f"## Additional context: {name}\n\n{clean}")
-                label_parts.append(f"+{name}")
+        if skip_corrections and name == "corrections":
+            label_parts.append("+corrections(skipped:cleaned)")
+            continue
+        clean = _load_augmentation_content(path)
+        if clean:
+            parts.append(f"## Additional context: {name}\n\n{clean}")
+            label_parts.append(f"+{name}")
 
     text = "\n\n".join(parts)
     return text, "core:" + "+".join(label_parts)
@@ -1521,22 +1532,14 @@ def cmd_show_prompt(args: argparse.Namespace, cfg: Config) -> None:
     aug_files = discover_augmentation_files()
     if aug_files:
         for name, path in aug_files:
-            content = path.read_text(encoding="utf-8").strip()
-            if not content:
-                continue
-            # Strip leading comments
-            lines = content.splitlines()
-            non_comment = []
-            for line in lines:
-                if line.startswith("#") and not non_comment:
-                    continue
-                non_comment.append(line)
-            clean = "\n".join(non_comment).strip()
+            clean = _load_augmentation_content(path)
             if not clean:
                 continue
             print(f"{GREEN}━━━ USER: {name} ━━━{RESET}")
             print(f"{CYAN}  Source: {path}{RESET}")
             print(f"{GREEN}  Role:   Personal augmentation (auto-appended){RESET}")
+            if name == "corrections":
+                print(f"{DIM}  Note:   Skipped when summarizing cleaned transcripts{RESET}")
             print(f"{DIM}{'─' * 60}{RESET}")
             print(f"## Additional context: {name}\n")
             print(clean)
@@ -1827,7 +1830,6 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     if args.summarize_object == "files":
         records = records_from_files(args.files)
     model = get_model(cfg, args, "summary")
-    prompt, prompt_label = build_prompt(cfg, args, "summary")
     planned_sources = [choose_summary_source(r, cfg, args) for r in records]
     confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s], model)
     for rec in records[: args.max or None]:
@@ -1837,6 +1839,9 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         if args.dry_run:
             print(f"Would summarize {source} with {model}")
             continue
+        # Skip corrections augmentation if source is an already-cleaned transcript
+        is_cleaned = any(source == cp for cp in rec.cleaned_paths)
+        prompt, prompt_label = build_prompt(cfg, args, "summary", skip_corrections=is_cleaned)
         text = Path(source).read_text(encoding="utf-8", errors="replace")
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}])
         if not data:
