@@ -1,5 +1,8 @@
 # ZMM Implementation Notes
 
+> **Historical document.** This file is a point-in-time design/planning artifact from 2026-06-05, written before zmm was extracted into its own repository. It references the old `zoom/`-prefixed paths, the `summarize_zoom_transcripts.py` script, and some prompts/config that have since been removed or relocated. It is kept for history and does **not** describe current behavior. For current docs see [../README.md](../README.md) and [../CHANGELOG.md](../CHANGELOG.md).
+
+
 Date: 2026-06-05
 
 This file accumulates questions, suggestions, implementation comments, and deferred items while implementing `zoom_meeting_manager.py` / `zmm`.

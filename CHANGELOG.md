@@ -6,6 +6,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Documentation (Part-4 audit)
+- README rewritten: added Contents/TOC, Input Layout and Output Layout
+  sections, config precedence + opencode.json fallback, a Person Profiles and
+  Extraction section explaining `[person.me]` vs `myself.txt`, a Summary Output
+  Schema section, `--max-input-tokens` in Global Options, release status, and
+  links to CHANGELOG and `schemas/summary.json`.
+- Removed the stale "layered prompt" feature claim; clarified that endpoints
+  must be OpenAI-compatible (dropped the unqualified AWS Bedrock claim).
+- Fixed the prompt-override example to use a real prompt name.
+- Marked `plans/*.md` as historical documents (not current behavior).
+
 ### Testing (Part-3 audit)
 - Test suite expanded from 54 to 153 tests across focused files:
   `test_core.py`, `test_parser.py`, `test_commands.py`, `test_contract.py`,
