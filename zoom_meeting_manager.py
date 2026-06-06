@@ -1053,12 +1053,15 @@ def _cmd_list_models(args: argparse.Namespace, cfg: Config, color: bool, provide
             render_table(["Model", "Cost(in)", "Cost(out)"], rows, fmt=args.format, color=color, plain=args.plain)
             any_output = True
 
-            # Flag config-only models (not returned by API)
+            # Flag config-only models (not returned by API) — hidden unless --show-stale
             config_only = sorted(set(config_models.keys()) - api_models)
             if config_only:
-                rows_stale = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in config_only]
-                print(f"\n  \033[33m{pname}: config-only (not returned by API — may be deprecated):\033[0m\n")
-                render_table(["Model", "Cost(in)", "Cost(out)"], rows_stale, fmt=args.format, color=color, plain=args.plain)
+                if getattr(args, "show_stale", False):
+                    rows_stale = [[m, _cost_str(m, "input"), _cost_str(m, "output")] for m in config_only]
+                    print(f"\n  \033[33m{pname}: config-only (not returned by API — may be deprecated):\033[0m\n")
+                    render_table(["Model", "Cost(in)", "Cost(out)"], rows_stale, fmt=args.format, color=color, plain=args.plain)
+                else:
+                    print(f"\n  \033[2m{pname}: {len(config_only)} config-only model(s) hidden (use --show-stale to show).\033[0m")
         elif config_models:
             # No API access — show config models
             all_models = sorted(config_models.keys())
@@ -2406,6 +2409,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_models)
     p_models.add_argument("--provider", metavar="NAME",
                           help="Filter by provider name (e.g. 'uri', 'openai', 'google').")
+    p_models.add_argument("--show-stale", action="store_true",
+                          help="Also show config-only models not returned by the live API (may be deprecated).")
     p_models.set_defaults(func=cmd_list, list_object="models")
     for name in ("prompts", "meetings"):
         sp = list_sub.add_parser(name)
