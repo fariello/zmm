@@ -1633,8 +1633,11 @@ def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingReco
         dir_path = Path(rec.raw_dir)
         caption_content = Path(rec.caption_path).read_text(encoding="utf-8", errors="replace") if rec.caption_path else ""
         chat_entries: list[tuple[str, str, str]] = []
-        if rec.chat_path:
-            _line_count, chat_entries = parse_chat_file(rec.chat_path)
+        if rec.chat_path and Path(rec.chat_path).is_file():
+            chat_line_count, chat_entries = parse_chat_file(rec.chat_path)
+            if chat_line_count > 0 and not chat_entries:
+                print(f"  \033[33m!\033[0m Chat file has {chat_line_count} lines but 0 public entries: {rec.chat_path}")
+                print(f"    (May contain only private messages, or format not recognized. Merging captions only.)")
         merged_body = merge_captions_and_chat(caption_content, chat_entries).strip()
         if not merged_body:
             continue
