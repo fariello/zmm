@@ -195,7 +195,17 @@ def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: 
             writer = csv.writer(buf)
             writer.writerow(headers)
             writer.writerows(rows)
-            subprocess.run(["vistab", "-w", str(term_width), "-X"], input=buf.getvalue(), text=True, check=True)
+            # Build alignment string: 'l' for text cols, 'c' for short/status cols
+            align = ""
+            for h in headers:
+                if h.lower() in ("date", "title", "prompt", "source", "model", "operation", "period", "text"):
+                    align += "l"
+                else:
+                    align += "c"
+            cmd = ["vistab", "-w", str(term_width), "-X"]
+            if align:
+                cmd.extend(["-a", align])
+            subprocess.run(cmd, input=buf.getvalue(), text=True, check=True)
             return
         except Exception:
             pass
@@ -899,17 +909,18 @@ def filter_missing(records: list[MeetingRecord], kind: str | None) -> list[Meeti
     return []
 
 
+OVERVIEW_HEADERS = ["Date", "Title", "Raw", "Mer-\nged", "Clean", "Sum-\nmary", "JSON"]
+
+
 def rows_overview(records: list[MeetingRecord], color: bool) -> list[list[Any]]:
     return [[
         r.meeting_date or "",
         r.title,
         mark(r.has_raw, color),
         mark(r.has_merged, color),
-        mark(r.has_cleaned, color) if r.cleaned_paths else mark(None, color),
+        mark(r.has_cleaned, color) if r.has_merged else mark(None, color),
         mark(r.has_summary, color),
         mark(r.has_summary_json, color),
-        warn_mark(color) if r.problems else mark(True, color),
-        ", ".join(r.problems),
     ] for r in records]
 
 
@@ -941,10 +952,10 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     if args.list_object == "missing":
         kind = args.missing_kind or "all"
         records = filter_missing(records, kind)
-        render_table(["Date", "Title", "Raw", "Merged", "Cleaned", "Summary", "JSON", "State", "Problems"], rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
         return
     if args.list_object == "meetings":
-        render_table(["Date", "Title", "Raw", "Merged", "Summary", "Problems"], [[r.meeting_date or "", r.title, mark(r.has_raw, color), mark(r.has_merged, color), mark(r.has_summary, color), ", ".join(r.problems)] for r in records], fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
         return
 
 
@@ -952,7 +963,7 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
     color = supports_color(args.color or cfg.color)
     if args.report_object == "status":
-        render_table(["Date", "Title", "Raw", "Merged", "Cleaned", "Summary", "JSON", "Problems"], rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
         return
     groups: dict[str, list[MeetingRecord]] = {}
     for r in records:
@@ -969,7 +980,7 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> None:
     for key in sorted(groups):
         vals = groups[key]
         rows.append([key, len(vals), sum(r.has_raw for r in vals), sum(r.has_merged for r in vals), sum(r.has_cleaned for r in vals), sum(r.has_summary for r in vals), sum(bool(r.problems) for r in vals)])
-    render_table(["Period", "Meetings", "Raw", "Merged", "Cleaned", "Summaries", "With Problems"], rows, fmt=args.format, color=color, plain=args.plain)
+    render_table(["Period", "Meetings", "Raw", "Mer-\nged", "Clean", "Sum-\nmary", "Issues"], rows, fmt=args.format, color=color, plain=args.plain)
 
 
 def cmd_index(args: argparse.Namespace, cfg: Config) -> None:
