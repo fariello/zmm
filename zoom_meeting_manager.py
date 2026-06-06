@@ -195,7 +195,7 @@ def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: 
             writer = csv.writer(buf)
             writer.writerow(headers)
             writer.writerows(rows)
-            subprocess.run(["vistab", "-w", str(term_width)], input=buf.getvalue(), text=True, check=True)
+            subprocess.run(["vistab", "-w", str(term_width), "-X"], input=buf.getvalue(), text=True, check=True)
             return
         except Exception:
             pass
