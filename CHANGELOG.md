@@ -6,6 +6,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Part-2 follow-ups
+- `tiktoken` is now a required dependency; token estimates (`estimate`,
+  `show prompt`, confirmation prompts, `--max-input-tokens`) use it for
+  accuracy, falling back to a heuristic only if unavailable.
+- `summarize` and `clean` write a run journal to `<output-dir>/.zmm-journal/`;
+  `--resume` skips items completed in a prior interrupted run.
+- `zmm clean diagnostics [--older-than DAYS]` deletes saved diagnostic files.
+- `records_from_files` falls back to the file's mtime date when the filename
+  has no parseable date (no more `Summaries-unknown/`).
+- Warns when the opencode.json `{file:...}` API-key file is group/world-readable.
+- `summarize` groups by source type (cleaned vs merged) to maximize provider
+  prompt caching.
+
 ### Security & Reliability (Part-2 audit)
 - Atomic writes for all output artifacts (summaries, transcripts, processing JSON)
   to prevent corruption on interruption.

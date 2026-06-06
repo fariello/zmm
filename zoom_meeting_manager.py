@@ -32,6 +32,11 @@ try:
 except Exception:  # pragma: no cover - command modes without API do not need it
     openai = None
 
+try:
+    import tiktoken
+except Exception:  # pragma: no cover - fall back to heuristic if unavailable
+    tiktoken = None
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = SCRIPT_DIR / "prompts"
 USER_PROMPTS_DIR = Path.home() / ".config" / "zmm" / "prompts"
@@ -72,6 +77,95 @@ def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None
                 tmp.unlink()
             except OSError:
                 pass
+
+
+_TOKEN_ENCODER = None
+
+
+def _get_token_encoder():
+    global _TOKEN_ENCODER
+    if _TOKEN_ENCODER is None and tiktoken is not None:
+        try:
+            # cl100k_base covers GPT-4/4o-class tokenization; a reasonable
+            # cross-model approximation for non-OpenAI models too.
+            _TOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _TOKEN_ENCODER = None
+    return _TOKEN_ENCODER
+
+
+def count_tokens(text: str) -> int:
+    """Count tokens in text using tiktoken when available, else a 4-char heuristic."""
+    enc = _get_token_encoder()
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    return len(text) // 4
+
+
+def count_tokens_in_file(path: str | Path) -> int:
+    """Token count for a file's contents (0 if unreadable)."""
+    try:
+        return count_tokens(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return 0
+
+
+class RunJournal:
+    """Records progress of a bulk model operation so an interrupted run can be
+    inspected and resumed. Written under <output-dir>/.zmm-journal/.
+
+    A journal tracks per-source outcome (done/failed). On a later run with
+    --resume, sources already marked done in the most recent journal for the
+    same operation are skipped even with --clobber.
+    """
+
+    def __init__(self, output_dir: Path, operation: str) -> None:
+        self.dir = Path(output_dir) / ".zmm-journal"
+        self.operation = operation
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.path = self.dir / f"{operation}-{ts}.json"
+        self.entries: dict[str, str] = {}  # source -> "done"|"failed"
+        self.started = ts
+
+    def mark(self, source: str, status: str) -> None:
+        self.entries[source] = status
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "operation": self.operation,
+                "started": self.started,
+                "updated": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+                "entries": self.entries,
+            }
+            atomic_write_text(self.path, json.dumps(payload, indent=2))
+        except OSError:
+            pass
+
+    def finish(self) -> None:
+        # Successful clean completion: remove the journal (nothing to resume).
+        try:
+            if self.path.exists():
+                self.path.unlink()
+        except OSError:
+            pass
+
+
+def load_resume_done(output_dir: Path, operation: str) -> set[str]:
+    """Return the set of sources marked 'done' in the most recent journal for op."""
+    jdir = Path(output_dir) / ".zmm-journal"
+    if not jdir.is_dir():
+        return set()
+    journals = sorted(jdir.glob(f"{operation}-*.json"))
+    if not journals:
+        return set()
+    try:
+        data = json.loads(journals[-1].read_text(encoding="utf-8"))
+        return {s for s, st in (data.get("entries") or {}).items() if st == "done"}
+    except Exception:
+        return set()
 
 
 # ----------------------------- Data Model ----------------------------- #
@@ -315,6 +409,17 @@ def _resolve_opencode_key(value: str) -> str | None:
     if m:
         key_path = Path(m.group(1)).expanduser()
         if key_path.is_file():
+            # Warn if the key file is group/world-readable (POSIX).
+            try:
+                mode = key_path.stat().st_mode
+                if mode & 0o077:
+                    print(
+                        f"WARNING: API key file {key_path} is group/world-readable "
+                        f"(mode {oct(mode & 0o777)}). Consider: chmod 600 {key_path}",
+                        file=sys.stderr,
+                    )
+            except OSError:
+                pass
             return key_path.read_text(encoding="utf-8").strip()
         return None
     return value
@@ -1819,7 +1924,7 @@ def cmd_show_prompt(args: argparse.Namespace, cfg: Config) -> None:
     # Token/cost estimate for the system prompt
     full_prompt, _ = build_prompt(cfg, args, task)
     prompt_chars = len(full_prompt)
-    prompt_tokens = prompt_chars // 4
+    prompt_tokens = count_tokens(full_prompt)
     model = get_model(cfg, args, task)
     cost_str = _estimate_cost(prompt_tokens, model, "input")
 
@@ -1884,8 +1989,7 @@ def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
     elif model_task == "extract":
         candidates = [s.json_path or s.path for r in records for s in r.summaries]
     files = [f for f in candidates if f and Path(f).is_file()]
-    chars = sum(Path(f).stat().st_size for f in files)
-    tokens = chars // 4
+    tokens = sum(count_tokens_in_file(f) for f in files)
 
     # Resolve model name for cost lookup (extract is local-only; uses summary model as reference)
     model_key = {"summarize": "summary", "clean": "cleanup"}.get(model_task, "summary")
@@ -2021,13 +2125,20 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     client = client_for(cfg)
     files = [r.merged_path for r in records if r.merged_path and Path(r.merged_path).is_file()]
     confirm_model_operation(args, cfg, "clean", files, model)
+    output = resolve_output_dir(args, cfg, required=False)
+    resume_done = load_resume_done(output, "clean") if getattr(args, "resume", False) else set()
+    journal = None if args.dry_run else RunJournal(output, "clean")
     n_done = n_skipped = n_failed = 0
     for rec in records[: args.max or None]:
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             n_skipped += 1
             continue
+        if rec.merged_path in resume_done:
+            print(f"Resume: skipping already-cleaned {rec.title}")
+            n_skipped += 1
+            continue
         year = (rec.meeting_date or str(date.today()))[:4]
-        out_dir = resolve_output_dir(args, cfg, required=False) / f"Cleaned-Transcripts-{year}"
+        out_dir = output / f"Cleaned-Transcripts-{year}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{Path(rec.merged_path).stem}.{model.replace('/', '--')}.cleaned.txt"
         if out_path.exists() and not args.clobber:
@@ -2044,14 +2155,75 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
         except Exception as exc:
             print_model_error(exc, model=model, operation="clean transcript", label=rec.merged_path, cfg=cfg)
             n_failed += 1
+            if journal:
+                journal.mark(rec.merged_path, "failed")
             if args.ignore_model_errors:
                 continue
             raise SystemExit(1)
         atomic_write_text(out_path, cleaned.strip() + "\n")
         print(f"Wrote {out_path}")
         n_done += 1
+        if journal:
+            journal.mark(rec.merged_path, "done")
     if not args.dry_run:
+        if journal and n_failed == 0:
+            journal.finish()
         print(f"\nDone: {n_done} cleaned, {n_skipped} skipped, {n_failed} failed.")
+        if n_failed:
+            print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
+
+
+def cmd_clean_diagnostics(args: argparse.Namespace, cfg: Config) -> None:
+    """Delete diagnostic files (raw failed model responses) from the output dir."""
+    output = resolve_output_dir(args, cfg, required=False)
+    diag_root = output / "Diagnostics"
+    if not diag_root.is_dir():
+        print("No Diagnostics directory found; nothing to clean.")
+        return
+    cutoff = None
+    older = getattr(args, "older_than", None)
+    if older is not None:
+        cutoff = datetime.now(timezone.utc).timestamp() - older * 86400
+    targets = []
+    for path in sorted(diag_root.rglob("*")):
+        if not path.is_file():
+            continue
+        if cutoff is not None and path.stat().st_mtime > cutoff:
+            continue
+        targets.append(path)
+    if not targets:
+        print("No diagnostic files match the criteria.")
+        return
+    total_bytes = sum(p.stat().st_size for p in targets)
+    print(f"  {len(targets)} diagnostic file(s), {total_bytes:,} bytes:")
+    for p in targets[: args.max or len(targets)]:
+        print(f"  {p.relative_to(output)}")
+    if args.dry_run:
+        print("\nDry run: nothing deleted.")
+        return
+    if not getattr(args, "yes", False) and sys.stdin.isatty():
+        answer = input("  Delete these files? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            raise SystemExit("Cancelled.")
+    deleted = 0
+    for p in targets:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as e:
+            print(f"  ! could not delete {p}: {e}", file=sys.stderr)
+    # Remove now-empty year/Diagnostics dirs.
+    for d in sorted(diag_root.rglob("*"), reverse=True):
+        if d.is_dir():
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+    try:
+        diag_root.rmdir()
+    except OSError:
+        pass
+    print(f"\nDeleted {deleted} diagnostic file(s).")
 
 
 def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
@@ -2211,10 +2383,25 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     model = get_model(cfg, args, "summary")
     planned_sources = [choose_summary_source(r, cfg, args) for r in records]
     confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s], model)
+    # Group by source type (cleaned vs merged) so the system prompt stays
+    # stable across consecutive calls — maximizes provider prefix caching,
+    # since corrections.txt is included for merged but skipped for cleaned.
+    def _is_cleaned(rec: MeetingRecord) -> bool:
+        s = choose_summary_source(rec, cfg, args)
+        return bool(s) and any(s == cp for cp in rec.cleaned_paths)
+    records = sorted(records, key=_is_cleaned)
+    output = resolve_output_dir(args, cfg, required=False)
+    resume_done = load_resume_done(output, "summarize") if getattr(args, "resume", False) else set()
+    journal = None if args.dry_run else RunJournal(output, "summarize")
     n_done = n_skipped = n_failed = 0
     for rec in records:
         source = choose_summary_source(rec, cfg, args)
         if not source:
+            n_skipped += 1
+            continue
+        # Resume: skip sources completed in a prior interrupted run
+        if source in resume_done:
+            print(f"Resume: skipping already-completed {rec.title}")
             n_skipped += 1
             continue
         # Skip if a summary for this model already exists, unless --clobber
@@ -2232,6 +2419,8 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}])
         if not data:
             n_failed += 1
+            if journal:
+                journal.mark(source, "failed")
             continue
         # Validate against the summary schema (non-fatal: warn, save diagnostic, still render)
         warnings = validate_summary_output(data, label=Path(source).name)
@@ -2241,8 +2430,15 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
             save_diagnostic("schema-warnings", source, model, "\n".join(warnings), cfg, args)
         write_summary_outputs(rec, source, data, model, prompt_label, cfg)
         n_done += 1
+        if journal:
+            journal.mark(source, "done")
     if not args.dry_run:
+        # Keep journal only if something failed (so --resume can use it).
+        if journal and n_failed == 0:
+            journal.finish()
         print(f"\nDone: {n_done} summarized, {n_skipped} skipped, {n_failed} failed.")
+        if n_failed:
+            print(f"  {n_failed} failed — re-run with --resume to retry only the unfinished items.")
 
 
 def summary_exists(rec: MeetingRecord, source: str, model: str, cfg: Config) -> bool:
@@ -2277,8 +2473,14 @@ def records_from_files(files: list[str]) -> list[MeetingRecord]:
             print(f"WARNING: file not found: {file}", file=sys.stderr)
             continue
         day = parse_date_from_name(path.name)
+        if not day:
+            # No parseable date in the filename: fall back to the file's
+            # modification date so output lands in a real Summaries-YYYY/
+            # directory rather than Summaries-unknown/.
+            day = date.fromtimestamp(path.stat().st_mtime).isoformat()
+            print(f"WARNING: no date in filename '{path.name}'; using file mtime date {day}.", file=sys.stderr)
         title = path.stem
-        records.append(MeetingRecord(id=f"{day or 'unknown'}-{slugify(title)}", title=title, meeting_date=day, merged_path=str(path)))
+        records.append(MeetingRecord(id=f"{day}-{slugify(title)}", title=title, meeting_date=day, merged_path=str(path)))
     return records
 
 
@@ -2491,8 +2693,7 @@ def write_processing_json(records: list[MeetingRecord], cfg: Config, args: argpa
 def confirm_model_operation(args: argparse.Namespace, cfg: Config, operation: str, files: list[str], model: str = "") -> None:
     if args.dry_run:
         return
-    total_bytes = sum(Path(f).stat().st_size for f in files if Path(f).is_file())
-    approx_tokens = total_bytes // 4
+    approx_tokens = sum(count_tokens_in_file(f) for f in files if Path(f).is_file())
     cost_str = _estimate_cost(approx_tokens, model, "input") if model else None
 
     print()
@@ -2631,6 +2832,9 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-context", action="store_true",
                         help="Do not send personal augmentation files (~/.config/zmm/prompts/) "
                              "to the model. Keeps names, org details, etc. off the wire.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip items already completed in the most recent interrupted run "
+                             "of this operation (uses the run journal in <output-dir>/.zmm-journal/).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2788,6 +2992,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_options(p_clean_transcripts)
     p_clean_transcripts.add_argument("--cleanup-prompt")
     p_clean_transcripts.set_defaults(func=cmd_clean)
+    p_clean_diag = clean_sub.add_parser("diagnostics")
+    add_common(p_clean_diag)
+    p_clean_diag.add_argument("--older-than", type=int, metavar="DAYS",
+                              help="Only delete diagnostics older than DAYS days.")
+    p_clean_diag.set_defaults(func=cmd_clean_diagnostics)
 
     p_delete = sub.add_parser("delete")
     delete_sub = p_delete.add_subparsers(dest="delete_object", required=True, parser_class=_SubcommandParser)

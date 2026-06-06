@@ -404,3 +404,53 @@ def test_resolve_opencode_key_file(tmp_path):
 
 def test_resolve_opencode_key_missing_file(tmp_path):
     assert zmm._resolve_opencode_key(f"{{file:{tmp_path}/nope.key}}") is None
+
+
+# ----------------------------- Part-2 follow-up coverage ----------------------------- #
+
+def test_count_tokens_uses_tiktoken():
+    # With tiktoken installed, encoding should be stable and reasonable.
+    n = zmm.count_tokens("Hello world, this is a test of tokenization.")
+    assert n > 0
+    # Same input is deterministic
+    assert n == zmm.count_tokens("Hello world, this is a test of tokenization.")
+    # A longer string yields more tokens
+    assert zmm.count_tokens("a " * 100) > n
+
+
+def test_count_tokens_in_file(tmp_path):
+    f = tmp_path / "t.txt"
+    f.write_text("some words here for counting")
+    assert zmm.count_tokens_in_file(f) > 0
+    assert zmm.count_tokens_in_file(tmp_path / "missing.txt") == 0
+
+
+def test_records_from_files_no_date_uses_mtime(tmp_path):
+    f = tmp_path / "no-date-title.txt"
+    f.write_text("[A] 10:00:00: hi")
+    recs = zmm.records_from_files([str(f)])
+    assert len(recs) == 1
+    # meeting_date should be a real ISO date (from mtime), not 'unknown'
+    assert recs[0].meeting_date is not None
+    assert recs[0].meeting_date[:2] == "20"
+    assert "unknown" not in recs[0].id
+
+
+def test_run_journal_roundtrip(tmp_path):
+    j = zmm.RunJournal(tmp_path, "summarize")
+    j.mark("/path/a.txt", "done")
+    j.mark("/path/b.txt", "failed")
+    done = zmm.load_resume_done(tmp_path, "summarize")
+    assert done == {"/path/a.txt"}
+
+
+def test_run_journal_finish_removes(tmp_path):
+    j = zmm.RunJournal(tmp_path, "clean")
+    j.mark("/x.txt", "done")
+    assert j.path.exists()
+    j.finish()
+    assert not j.path.exists()
+
+
+def test_load_resume_done_no_journal(tmp_path):
+    assert zmm.load_resume_done(tmp_path, "summarize") == set()

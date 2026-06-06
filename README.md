@@ -17,6 +17,7 @@ A CLI tool for managing Zoom meeting transcripts: inventory, merge, summarize, e
 ## Requirements
 
 - Python 3.10+
+- `tiktoken` (required — accurate token counting for estimates and limits)
 - Optional: `openai` package (for model-backed commands like summarize, clean)
 - Optional: `vistab` (for pretty terminal tables)
 
@@ -94,6 +95,7 @@ Every compound command also accepts `help` (e.g. `zmm list help`).
 | `zmm summarize files FILE...` | Summarize specific files |
 | `zmm fix missing summaries` | Summarize only where summaries are missing |
 | `zmm clean transcripts` | LLM-clean merged transcripts |
+| `zmm clean diagnostics [--older-than DAYS]` | Delete saved diagnostic files |
 
 ### Extraction (local regex search, no model calls)
 
@@ -188,9 +190,14 @@ This skips the normal core+augmentation assembly and uses only the specified lay
 --color MODE         Color mode: auto, always, never
 --yes                Skip confirmation prompts
 --no-context         Don't send personal augmentation files to the model
+--resume             Skip items completed in a prior interrupted run
 --debug              Print diagnostic information
 --version            Show version
 ```
+
+If a bulk `summarize` or `clean` run is interrupted or has failures, zmm keeps
+a journal under `<output-dir>/.zmm-journal/`. Re-run with `--resume` to retry
+only the unfinished items.
 
 ## Data & Privacy
 

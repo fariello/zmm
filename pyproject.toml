@@ -13,6 +13,9 @@ authors = [
     {name = "Gabriel Fariello"},
 ]
 keywords = ["zoom", "meetings", "transcripts", "summarize", "cli"]
+dependencies = [
+    "tiktoken>=0.5",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
