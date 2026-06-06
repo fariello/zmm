@@ -213,6 +213,9 @@ def expand_env(value: str | None) -> str | None:
     return os.path.expandvars(value)
 
 
+OPENCODE_CONFIG = Path.home() / ".config" / "opencode" / "opencode.json"
+
+
 def config_search_paths(explicit: str | None) -> list[Path]:
     if explicit:
         return [Path(explicit).expanduser()]
@@ -226,6 +229,78 @@ def config_search_paths(explicit: str | None) -> list[Path]:
     ]
 
 
+def _load_opencode_config() -> dict[str, Any] | None:
+    """Load ~/.config/opencode/opencode.json if it exists. Returns parsed JSON or None."""
+    if not OPENCODE_CONFIG.is_file():
+        return None
+    try:
+        return json.loads(OPENCODE_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _resolve_opencode_key(value: str) -> str | None:
+    """Resolve {file:path} references used in opencode.json API keys."""
+    m = re.fullmatch(r"\{file:(.*)\}", value.strip())
+    if m:
+        key_path = Path(m.group(1)).expanduser()
+        if key_path.is_file():
+            return key_path.read_text(encoding="utf-8").strip()
+        return None
+    return value
+
+
+def _apply_opencode_fallback(cfg: Config) -> None:
+    """Fill missing cfg fields from opencode.json (api_key, base_url, models)."""
+    oc = _load_opencode_config()
+    if not oc:
+        return
+
+    providers = oc.get("provider") or {}
+
+    # Determine which provider to use — prefer one matching cfg.base_url, else first with an apiKey
+    matched_provider = None
+    for pname, pinfo in providers.items():
+        opts = pinfo.get("options") or {}
+        provider_url = opts.get("baseURL", "")
+        if cfg.base_url and provider_url and cfg.base_url.rstrip("/") == provider_url.rstrip("/"):
+            matched_provider = pinfo
+            break
+    if not matched_provider:
+        # Fall back to first provider with an apiKey
+        for pname, pinfo in providers.items():
+            opts = pinfo.get("options") or {}
+            if opts.get("apiKey"):
+                matched_provider = pinfo
+                break
+
+    if not matched_provider:
+        return
+
+    opts = matched_provider.get("options") or {}
+
+    # Fill API key if missing
+    if not cfg.api_key:
+        raw_key = opts.get("apiKey", "")
+        resolved = _resolve_opencode_key(raw_key)
+        if resolved:
+            cfg.api_key = resolved
+
+    # Fill base URL if missing
+    if not cfg.base_url:
+        url = opts.get("baseURL")
+        if url:
+            cfg.base_url = url
+
+    # Fill models if empty — pick first available model from provider as summary default
+    if not cfg.models.get("summary"):
+        provider_models = matched_provider.get("models") or {}
+        if provider_models:
+            # Pick cheapest model by input cost as a reasonable default
+            cheapest = min(provider_models.items(), key=lambda kv: (kv[1].get("cost") or {}).get("input", 999))
+            cfg.models.setdefault("summary", cheapest[0])
+
+
 def load_config(path: str | None, *, require_api: bool = False) -> Config:
     cfg = Config()
     found = None
@@ -234,9 +309,11 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
             found = candidate
             break
     if not found:
-        if require_api:
+        # No zmm config — try opencode.json as sole source
+        _apply_opencode_fallback(cfg)
+        if require_api and not cfg.api_key:
             searched = "\n  ".join(str(p) for p in config_search_paths(path))
-            raise SystemExit(f"ERROR: No config file found. Searched:\n  {searched}")
+            raise SystemExit(f"ERROR: No config file found. Searched:\n  {searched}\nAlso checked: {OPENCODE_CONFIG}")
         return cfg
 
     cfg.config_path = str(found)
@@ -298,8 +375,11 @@ def load_config(path: str | None, *, require_api: bool = False) -> Config:
             cfg.default_person = "me"
             cfg.people["me"] = {"display_name": raw.get("person_name", "Me"), "aliases": split_list(raw.get("person_aliases"))}
 
+    # Fallback: fill missing api_key/base_url/models from opencode.json
+    _apply_opencode_fallback(cfg)
+
     if require_api and not cfg.api_key:
-        raise SystemExit(f"ERROR: No API key found in {found}. Set api_key or use {{env:VAR}} syntax.")
+        raise SystemExit(f"ERROR: No API key found in {found or 'any config'}. Set api_key, use {{env:VAR}} syntax, or configure ~/.config/opencode/opencode.json.")
     return cfg
 
 
@@ -806,27 +886,60 @@ def cmd_index(args: argparse.Namespace, cfg: Config) -> None:
     print(f"Indexed {len(records)} meeting records.")
 
 
+def _ask(prompt: str, default: str = "") -> str:
+    """Ask a question interactively, returning the answer or default."""
+    suffix = f" [{default}]: " if default else ": "
+    try:
+        answer = input(prompt + suffix).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    return answer or default
+
+
 def cmd_init(args: argparse.Namespace, cfg: Config) -> None:
     target = Path(args.output or Path.home() / ".config" / CONFIG_NAME).expanduser()
     if target.exists() and not args.clobber:
         raise SystemExit(f"ERROR: Config exists: {target}. Use --clobber to overwrite.")
     target.parent.mkdir(parents=True, exist_ok=True)
-    text = """# zoom_meeting_manager.cfg
+
+    # Defaults
+    input_dir = ""
+    output_dir = ""
+    base_url = ""
+    api_key = "{env:OPENAI_API_KEY}"
+    summary_model = "o4-mini"
+    display_name = ""
+    aliases = ""
+
+    # Interactive wizard when stdin is a terminal
+    if sys.stdin.isatty() and not getattr(args, "yes", False):
+        print("zmm config wizard\n")
+        input_dir = _ask("Raw Zoom meeting directory (input_dir)", input_dir)
+        output_dir = _ask("Output directory (output_dir)", output_dir)
+        base_url = _ask("API base URL (blank for OpenAI default)", base_url)
+        api_key = _ask("API key or env reference", api_key)
+        summary_model = _ask("Default summary model", summary_model)
+        display_name = _ask("Your display name (for extraction)", display_name)
+        aliases = _ask("Your name aliases (comma-separated)", aliases)
+        print()
+
+    text = f"""# zoom_meeting_manager.cfg
 
 [paths]
-input_dir =
-output_dir =
+input_dir = {input_dir}
+output_dir = {output_dir}
 
 [source]
 type = zoom
 
 [api]
-base_url =
-api_key = {env:OPENAI_API_KEY}
+base_url = {base_url}
+api_key = {api_key}
 no_temperature = false
 
 [models]
-summary = o4-mini
+summary = {summary_model}
 cleanup =
 extraction =
 prioritization =
@@ -848,8 +961,8 @@ corrections =
 default_person = me
 
 [person.me]
-display_name =
-aliases =
+display_name = {display_name}
+aliases = {aliases}
 speaker_regexes =
 assignment_verbs = can you, could you, please, need you to, follow up, send, review, schedule, draft, prepare, own, take, circle back
 commitment_patterns = I will, I'll, I can, I'll take, I'll follow up, I'll send, I'll review, I'll schedule, let me, I need to, I'll own
@@ -870,19 +983,66 @@ include_all_model_summaries = true
     print("Next: edit paths/API settings, then run `zmm index --rebuild` and `zmm list missing`.")
 
 
+def _load_model_costs() -> dict[str, dict[str, float]]:
+    """Load per-model cost data from ~/.config/opencode/opencode.json if available."""
+    costs: dict[str, dict[str, float]] = {}
+    oc = _load_opencode_config()
+    if not oc:
+        return costs
+    for provider_info in (oc.get("provider") or {}).values():
+        for model_id, model_info in (provider_info.get("models") or {}).items():
+            cost = model_info.get("cost")
+            if cost and isinstance(cost, dict):
+                costs[model_id] = cost
+                # Also index by short name (without provider prefix)
+                if "/" in model_id:
+                    short = model_id.rsplit("/", 1)[-1]
+                    costs.setdefault(short, cost)
+    return costs
+
+
+def _estimate_cost(tokens: int, model: str, direction: str = "input") -> str | None:
+    """Return formatted cost string or None if pricing unavailable."""
+    costs = _load_model_costs()
+    model_cost = costs.get(model)
+    if not model_cost:
+        # Try partial match
+        for key, val in costs.items():
+            if model in key or key in model:
+                model_cost = val
+                break
+    if not model_cost:
+        return None
+    rate = model_cost.get(direction, 0)
+    if not rate:
+        return None
+    # Costs are per million tokens
+    dollar = (tokens / 1_000_000) * rate
+    return f"${dollar:.4f}"
+
+
 def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
-    files = []
-    if args.estimate_object == "summarize":
-        files = [r.cleaned_paths[-1] if (cfg.summarization_source != "merged" and r.cleaned_paths) else r.merged_path for r in records]
-    elif args.estimate_object == "clean":
-        files = [r.merged_path for r in records]
-    elif args.estimate_object == "extract":
-        files = [s.json_path or s.path for r in records for s in r.summaries]
-    files = [f for f in files if f and Path(f).is_file()]
+    candidates: list[str | None] = []
+    model_task = args.estimate_object
+    if model_task == "summarize":
+        candidates = [r.cleaned_paths[-1] if (cfg.summarization_source != "merged" and r.cleaned_paths) else r.merged_path for r in records]
+    elif model_task == "clean":
+        candidates = [r.merged_path for r in records]
+    elif model_task == "extract":
+        candidates = [s.json_path or s.path for r in records for s in r.summaries]
+    files = [f for f in candidates if f and Path(f).is_file()]
     chars = sum(Path(f).stat().st_size for f in files)
     tokens = chars // 4
-    render_table(["Operation", "Files", "Approx Input Tokens"], [[args.estimate_object, len(files), tokens]], fmt=args.format, color=supports_color(args.color or cfg.color), plain=args.plain)
+
+    # Resolve model name for cost lookup
+    model_key = {"summarize": "summary", "clean": "cleanup", "extract": "extraction"}.get(model_task, "summary")
+    model = cfg.models.get(model_key) or "o4-mini"
+    cost_str = _estimate_cost(tokens, model, "input") or "n/a"
+
+    headers = ["Operation", "Model", "Files", "Approx Input Tokens", "Est. Input Cost"]
+    rows = [[model_task, model, len(files), tokens, cost_str]]
+    render_table(headers, rows, fmt=args.format, color=supports_color(args.color or cfg.color), plain=args.plain)
 
 
 def cmd_export(args: argparse.Namespace, cfg: Config) -> None:
@@ -1248,6 +1408,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_missing)
     p_missing.add_argument("missing_kind", nargs="?", choices=("all", "merged", "summaries", "raw", "transcripts"), default="all")
     p_missing.set_defaults(func=cmd_list, list_object="missing")
+    # Also register "list missing merged" etc. as top-level list subcommands for IPD compliance
+    for mk, alias in [("merged", "transcripts")]:
+        sp = list_sub.add_parser(f"missing-{mk}", aliases=[f"missing-{alias}"] if alias else [])
+        add_common(sp)
+        sp.set_defaults(func=cmd_list, list_object="missing", missing_kind=mk)
+    for mk in ("summaries", "raw"):
+        sp = list_sub.add_parser(f"missing-{mk}")
+        add_common(sp)
+        sp.set_defaults(func=cmd_list, list_object="missing", missing_kind=mk)
 
     p_report = sub.add_parser("report")
     add_common(p_report)
