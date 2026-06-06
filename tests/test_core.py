@@ -28,10 +28,9 @@ def test_clean_filename_strips_edges():
 
 
 def test_clean_filename_unicode():
-    # NFKD normalization converts fancy chars
-    result = zmm.clean_filename("café meeting.txt")
-    assert "cafe" in result or "caf" in result
-    assert result.endswith(".txt")
+    # NFKD normalization decomposes 'é' -> 'e' + combining accent, then the
+    # accent (non-alphanumeric) is stripped, yielding "cafe-meeting.txt".
+    assert zmm.clean_filename("café meeting.txt") == "cafe-meeting.txt"
 
 
 def test_clean_filename_preserves_dots_in_name():

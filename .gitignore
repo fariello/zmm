@@ -17,3 +17,8 @@ tmp/
 .#*
 *.elc
 .dir-locals.el
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/

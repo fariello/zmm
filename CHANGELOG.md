@@ -6,6 +6,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Testing (Part-3 audit)
+- Test suite expanded from 54 to 153 tests across focused files:
+  `test_core.py`, `test_parser.py`, `test_commands.py`, `test_contract.py`,
+  `test_integration.py`, with shared `conftest.py` fixtures and `helpers.py`.
+- Added a fake OpenAI client fixture, enabling tests of model-backed commands
+  (`summarize`, `clean`) without network access.
+- New coverage: parser dispatch + option-before-subcommand regression;
+  `choose_summary_source` mode matrix; summarize/clean skip/clobber/dry-run;
+  extract kind filtering; schema↔code↔renderer contract; summary output
+  writing; filename/model round-trip; compute_problems/filter_missing;
+  build_prompt assembly; export/index/migrate; opencode fallback & config
+  precedence; delete-raw and clean-diagnostics.
+- CI now reports line coverage (currently ~67%).
+
 ### Part-2 follow-ups
 - `tiktoken` is now a required dependency; token estimates (`estimate`,
   `show prompt`, confirmation prompts, `--max-input-tokens`) use it for
