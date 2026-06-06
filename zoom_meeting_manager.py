@@ -23,7 +23,7 @@ import subprocess
 import sys
 import unicodedata
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +51,6 @@ NA = "-"
 class SummaryRecord:
     path: str
     model: str | None = None
-    prompt_label: str | None = None
-    created_at: str | None = None
-    source_transcript_sha256: str | None = None
-    summary_sha256: str | None = None
     json_path: str | None = None
 
 
@@ -561,9 +557,27 @@ def merge_captions_and_chat(caption_content: str, chat_entries: list[tuple[str, 
     for ts, speaker, msg in chat_entries:
         events.append({"timestamp": ts, "speaker": speaker, "text": f"[IN CHAT]: {msg}", "source": "chat"})
 
-    def to_dt(ts: str) -> datetime:
-        return datetime.strptime(ts, "%H:%M:%S")
-    events.sort(key=lambda e: to_dt(e["timestamp"]))
+    # Compute a rollover-aware absolute time (in seconds) for each event so that
+    # meetings crossing midnight sort correctly. Each source stream is recorded
+    # in chronological order; whenever its clock goes backwards we add 24h.
+    def _seconds(ts: str) -> int:
+        try:
+            t = datetime.strptime(ts, "%H:%M:%S")
+            return t.hour * 3600 + t.minute * 60 + t.second
+        except Exception:
+            return 0
+
+    day_offset: dict[str, int] = {}
+    prev_secs: dict[str, int] = {}
+    for e in events:
+        src = e["source"]
+        secs = _seconds(e["timestamp"])
+        if src in prev_secs and secs < prev_secs[src]:
+            day_offset[src] = day_offset.get(src, 0) + 86400
+        prev_secs[src] = secs
+        e["_sortkey"] = str(secs + day_offset.get(src, 0)).zfill(12)
+
+    events.sort(key=lambda e: e["_sortkey"])
 
     merged_events: list[dict[str, str]] = []
     for e in events:
@@ -934,11 +948,35 @@ def parse_json_response(content: str) -> dict[str, Any]:
         raise
 
 
+# Required top-level keys in the model_output, per schemas/summary.json.
+SUMMARY_REQUIRED_KEYS = [
+    "improved_title", "one_liner", "high_level_summary", "key_takeaways",
+    "decisions", "action_items", "open_questions", "key_topics",
+    "attendees", "detailed_notes", "llm_notes",
+]
+
+
+def validate_summary_output(data: dict[str, Any], *, label: str) -> list[str]:
+    """Lightweight, dependency-free validation of model summary output.
+
+    Checks for required top-level keys per schemas/summary.json. Returns a
+    list of warning strings (empty if valid). Does not raise — summaries
+    render best-effort even if some fields are missing.
+    """
+    warnings: list[str] = []
+    if not isinstance(data, dict):
+        return [f"{label}: model output is not a JSON object"]
+    missing = [k for k in SUMMARY_REQUIRED_KEYS if k not in data]
+    if missing:
+        warnings.append(f"{label}: model output missing fields: {', '.join(missing)}")
+    return warnings
+
+
 def save_diagnostic(kind: str, label: str, model: str, content: str, cfg: Config, args: argparse.Namespace) -> Path:
     year = parse_date_from_name(label) or str(date.today().year)
     safe_label = slugify(Path(label).stem or label)[:120]
     safe_model = model.replace("/", "--")
-    diag_dir = Path(cfg.output_dir or args.output_dir or ".") / "Diagnostics" / year[:4]
+    diag_dir = resolve_output_dir(args, cfg, required=False) / "Diagnostics" / year[:4]
     diag_dir.mkdir(parents=True, exist_ok=True)
     path = diag_dir / f"{safe_label}.{safe_model}.{kind}.txt"
     path.write_text(content, encoding="utf-8")
@@ -1100,13 +1138,14 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
         _cmd_list_models(args, cfg, color, provider_filter)
         return
     records = get_records(args, cfg)
+    limit = getattr(args, "max", None) or None
     if args.list_object == "missing":
         kind = args.missing_kind or "all"
         records = filter_missing(records, kind)
-        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color, plain=args.plain)
         return
     if args.list_object == "meetings":
-        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color, plain=args.plain)
         return
 
 
@@ -1136,8 +1175,45 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> None:
 
 def cmd_index(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
+    rebuild = getattr(args, "rebuild", False)
+    if rebuild:
+        # Force a fresh rewrite of all processing JSON, ignoring any existing files.
+        output = resolve_output_dir(args, cfg, required=False)
+        for existing in output.glob("*-Meeting-Processing.json"):
+            try:
+                existing.unlink()
+            except OSError:
+                pass
     write_processing_json(records, cfg, args)
-    print(f"Indexed {len(records)} meeting records.")
+    print(f"Indexed {len(records)} meeting records{' (rebuilt)' if rebuild else ''}.")
+
+
+def cmd_write_json(args: argparse.Namespace, cfg: Config) -> None:
+    records = get_records(args, cfg)
+    write_processing_json(records, cfg, args)
+    print(f"Wrote processing JSON for {len(records)} meeting records.")
+
+
+def cmd_migrate(args: argparse.Namespace, cfg: Config) -> None:
+    """Migrate/import existing on-disk output into zmm metadata.
+
+    Discovers existing merged transcripts, cleaned transcripts, and summaries,
+    infers model names from summary filenames, and writes processing JSON so
+    that pre-existing output is tracked by zmm.
+    """
+    records = get_records(args, cfg)
+    summary_count = sum(len(r.summaries) for r in records)
+    cleaned_count = sum(len(r.cleaned_paths) for r in records)
+    merged_count = sum(1 for r in records if r.has_merged)
+    print(f"Discovered {len(records)} meetings:")
+    print(f"  {merged_count} with merged transcripts")
+    print(f"  {cleaned_count} cleaned transcripts")
+    print(f"  {summary_count} summaries (models inferred from filenames)")
+    if args.dry_run:
+        print("Dry run: no metadata written.")
+        return
+    write_processing_json(records, cfg, args)
+    print(f"Wrote processing JSON. Migration complete.")
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -1562,7 +1638,7 @@ def cmd_show(args: argparse.Namespace, cfg: Config) -> None:
     # Models
     lines.append("")
     lines.append("Models:")
-    for task in ("summary", "cleanup", "extraction", "prioritization", "validation"):
+    for task in ("summary", "cleanup"):
         model = cfg.models.get(task)
         lines.append(f"  {task}: {model or '(not set)'}")
 
@@ -1741,9 +1817,9 @@ def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
     chars = sum(Path(f).stat().st_size for f in files)
     tokens = chars // 4
 
-    # Resolve model name for cost lookup
-    model_key = {"summarize": "summary", "clean": "cleanup", "extract": "extraction"}.get(model_task, "summary")
-    model = cfg.models.get(model_key) or "o4-mini"
+    # Resolve model name for cost lookup (extract is local-only; uses summary model as reference)
+    model_key = {"summarize": "summary", "clean": "cleanup"}.get(model_task, "summary")
+    model = cfg.models.get(model_key) or cfg.models.get("summary") or "o4-mini"
     cost_str = _estimate_cost(tokens, model, "input") or "n/a"
 
     headers = ["Operation", "Model", "Files", "Approx Input Tokens", "Est. Input Cost"]
@@ -1753,7 +1829,7 @@ def cmd_estimate(args: argparse.Namespace, cfg: Config) -> None:
 
 def cmd_export(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
-    output = Path(cfg.output_dir or args.output_dir or ".")
+    output = resolve_output_dir(args, cfg, required=False)
     period = getattr(args, "period", None) or cfg.aggregate_period or "auto"
     groups: dict[str, list[MeetingRecord]] = {}
     for rec in records:
@@ -1819,7 +1895,7 @@ def print_file_report(path: Path, count: int) -> None:
 def cmd_delete_raw(args: argparse.Namespace, cfg: Config) -> None:
     """Move raw meeting directories to to-delete/ when a merged transcript exists."""
     records = get_records(args, cfg)
-    output = Path(cfg.output_dir or args.output_dir or ".")
+    output = resolve_output_dir(args, cfg, required=False)
     trash_dir = output / "to-delete"
     candidates = [r for r in records if r.has_raw and r.has_merged and r.raw_dir]
 
@@ -1879,7 +1955,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             continue
         year = (rec.meeting_date or str(date.today()))[:4]
-        out_dir = Path(cfg.output_dir or args.output_dir or ".") / f"Cleaned-Transcripts-{year}"
+        out_dir = resolve_output_dir(args, cfg, required=False) / f"Cleaned-Transcripts-{year}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{Path(rec.merged_path).stem}.{model.replace('/', '--')}.cleaned.txt"
         if out_path.exists() and not args.clobber:
@@ -1926,7 +2002,7 @@ def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingReco
         meeting_dt = rec.meeting_datetime or "Unknown"
         merged = f"Meeting Title: {rec.title}\nMeeting Start Datetime: {meeting_dt}\n\n{merged_body}\n"
         year = (rec.meeting_date or str(date.today()))[:4]
-        out_dir = Path(cfg.output_dir or args.output_dir or ".") / f"Merged-Transcripts-{year}"
+        out_dir = resolve_output_dir(args, cfg, required=False) / f"Merged-Transcripts-{year}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = Path(rec.expected_merged_path or out_dir / expected_merged_name(dir_path.name))
         out_path.write_text(merged, encoding="utf-8")
@@ -1936,6 +2012,21 @@ def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingReco
     return get_records(args, cfg) if changed else records
 
 
+# Built-in keyword sets used to bias person extraction by kind.
+# These are heuristic line-level filters for the local (non-LLM) search.
+_ACTION_KEYWORDS = [
+    "will", "i'll", "going to", "need to", "should", "must", "todo", "to-do",
+    "action item", "follow up", "follow-up", "send", "review", "schedule",
+    "draft", "prepare", "by friday", "by monday", "by next", "deadline", "due",
+    "assign", "owner", "responsible", "take care of", "circle back",
+]
+_STATEMENT_KEYWORDS = [
+    "i think", "i believe", "i recommend", "my concern", "i agree", "i disagree",
+    "we should", "we need", "the issue is", "the risk is", "my preference",
+    "in my opinion", "i feel", "i suggest", "i propose", "i'd argue",
+]
+
+
 def cmd_extract(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
     person_id = getattr(args, "person", None) or cfg.default_person or "me"
@@ -1943,13 +2034,31 @@ def cmd_extract(args: argparse.Namespace, cfg: Config) -> None:
     aliases = profile.get("aliases") or []
     if isinstance(aliases, str):
         aliases = split_list(aliases)
+
+    kind = getattr(args, "kind", None)  # actions | statements | items (None for search)
+
     if args.extract_object == "search":
         pattern = args.regex or args.match
         if not pattern:
             raise SystemExit("ERROR: extract search requires --regex or --match.")
+        person_regex = None
+        kind_regex = None
     else:
         terms = aliases or [profile.get("display_name") or person_id]
+        if not any(terms):
+            raise SystemExit(f"ERROR: no name/aliases configured for person '{person_id}'. Set [person.{person_id}] in config.")
         pattern = "|".join(re.escape(t) for t in terms if t)
+        person_regex = re.compile(pattern, re.IGNORECASE)
+        # Build kind-specific keyword filter
+        kw: list[str] = []
+        if kind == "actions":
+            kw = _ACTION_KEYWORDS
+        elif kind == "statements":
+            kw = _STATEMENT_KEYWORDS
+        elif kind == "items":
+            kw = _ACTION_KEYWORDS + _STATEMENT_KEYWORDS
+        kind_regex = re.compile("|".join(re.escape(k) for k in kw), re.IGNORECASE) if kw else None
+
     regex = re.compile(pattern, re.IGNORECASE)
     rows = []
     for r in records:
@@ -1957,8 +2066,12 @@ def cmd_extract(args: argparse.Namespace, cfg: Config) -> None:
         for source in [s for s in sources if s and Path(s).is_file()]:
             lines = Path(source).read_text(encoding="utf-8", errors="replace").splitlines()
             for idx, line in enumerate(lines, start=1):
-                if regex.search(line):
-                    rows.append([r.meeting_date or "", r.title, Path(source).name, idx, line[:180]])
+                if not regex.search(line):
+                    continue
+                # For person extraction with a kind filter, require a kind keyword too
+                if kind_regex is not None and not kind_regex.search(line):
+                    continue
+                rows.append([r.meeting_date or "", r.title, Path(source).name, idx, line[:180]])
     render_table(["Date", "Title", "Source", "Line", "Text"], rows, fmt=args.format, color=supports_color(args.color or cfg.color), plain=args.plain)
 
 
@@ -1983,7 +2096,7 @@ def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace
             print(f"  Would auto-clean {rec.merged_path} with {cleanup_model}")
             continue
         year = (rec.meeting_date or str(date.today()))[:4]
-        out_dir = Path(cfg.output_dir or args.output_dir or ".") / f"Cleaned-Transcripts-{year}"
+        out_dir = resolve_output_dir(args, cfg, required=False) / f"Cleaned-Transcripts-{year}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{Path(rec.merged_path).stem}.{cleanup_model.replace('/', '--')}.cleaned.txt"
         if out_path.exists():
@@ -2028,6 +2141,12 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}])
         if not data:
             continue
+        # Validate against the summary schema (non-fatal: warn, save diagnostic, still render)
+        warnings = validate_summary_output(data, label=Path(source).name)
+        if warnings:
+            for w in warnings:
+                print(f"  \033[33m! {w}\033[0m", file=sys.stderr)
+            save_diagnostic("schema-warnings", source, model, "\n".join(warnings), cfg, args)
         write_summary_outputs(rec, source, data, model, prompt_label, cfg)
 
 
@@ -2070,7 +2189,6 @@ def compute_duration(transcript_text: str) -> str | None:
         end = datetime.strptime(timestamps[-1], fmt)
         if end < start:
             # Crossed midnight
-            from datetime import timedelta
             end += timedelta(days=1)
         delta = end - start
         hours, remainder = divmod(int(delta.total_seconds()), 3600)
@@ -2105,7 +2223,7 @@ def write_summary_outputs(rec: MeetingRecord, source: str, model_data: dict[str,
     metadata = {
         "model": model,
         "prompt_label": prompt_label,
-        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "source_sha256": sha256_file(source),
         "zmm_version": __version__,
     }
@@ -2249,7 +2367,7 @@ def render_summary_text(payload: dict[str, Any]) -> str:
 
 
 def write_processing_json(records: list[MeetingRecord], cfg: Config, args: argparse.Namespace) -> None:
-    output = Path(cfg.output_dir or args.output_dir or ".")
+    output = resolve_output_dir(args, cfg, required=False)
     by_year: dict[str, list[MeetingRecord]] = {}
     for rec in records:
         year = (rec.meeting_date or "unknown")[:4]
@@ -2258,7 +2376,7 @@ def write_processing_json(records: list[MeetingRecord], cfg: Config, args: argpa
         path = output / f"{year}-Meeting-Processing.json"
         payload = {
             "schema_version": 1,
-            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "period": {"label": year},
             "meetings": [asdict(v) for v in vals],
         }
@@ -2292,13 +2410,28 @@ def confirm_model_operation(args: argparse.Namespace, cfg: Config, operation: st
         raise SystemExit("Cancelled.")
 
 
+def resolve_output_dir(args: argparse.Namespace, cfg: Config, *, required: bool = True) -> Path:
+    """Single source of truth for the output directory.
+
+    main() copies CLI --output-dir into cfg, but this also checks args directly
+    so the resolution is consistent across all commands.
+    """
+    output_dir = getattr(args, "output_dir", None) or cfg.output_dir
+    if not output_dir:
+        if required:
+            raise SystemExit("ERROR: --output-dir or [paths] output_dir is required.")
+        return Path(".")
+    return Path(output_dir)
+
+
 def get_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
     start, end = parse_date_range(getattr(args, "date_range", None))
     input_dir = args.input_dir or cfg.input_dir
-    output_dir = args.output_dir or cfg.output_dir
-    if not output_dir:
-        raise SystemExit("ERROR: --output-dir or [paths] output_dir is required.")
-    return discover_inventory(input_dir, output_dir, start=start, end=end, match=getattr(args, "match", None))[: getattr(args, "max", None) or None]
+    output_dir = str(resolve_output_dir(args, cfg))
+    # NOTE: --max is intentionally NOT applied here. Each command applies it
+    # where it is semantically meaningful (rows displayed or items processed),
+    # avoiding double truncation.
+    return discover_inventory(input_dir, output_dir, start=start, end=end, match=getattr(args, "match", None))
 
 
 # ----------------------------- Parser ----------------------------- #
@@ -2381,10 +2514,6 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
                         help="Model for summarization (overrides [models] summary).")
     parser.add_argument("--cleanup-model", metavar="MODEL",
                         help="Model for transcript cleanup (overrides [models] cleanup).")
-    parser.add_argument("--extraction-model", metavar="MODEL",
-                        help="Model for extraction (overrides [models] extraction).")
-    parser.add_argument("--prioritization-model", metavar="MODEL",
-                        help="Model for prioritization (overrides [models] prioritization).")
     parser.add_argument("--prompt-layer", action="append", metavar="NAME",
                         help="Add a prompt layer by name (can be repeated).")
     parser.add_argument("--prompt-context", action="append", metavar="NAME",
@@ -2451,14 +2580,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_help_subcommand(migrate_sub, p_migrate)
     p_legacy = migrate_sub.add_parser("legacy")
     add_common(p_legacy)
-    p_legacy.set_defaults(func=cmd_index)
+    p_legacy.set_defaults(func=cmd_migrate)
 
     p_write = sub.add_parser("write")
     write_sub = p_write.add_subparsers(dest="write_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(write_sub, p_write)
     p_write_json = write_sub.add_parser("processing-json")
     add_common(p_write_json)
-    p_write_json.set_defaults(func=cmd_index)
+    p_write_json.set_defaults(func=cmd_write_json)
 
     p_export = sub.add_parser("export")
     export_sub = p_export.add_subparsers(dest="export_object", required=True, parser_class=_SubcommandParser)
@@ -2485,7 +2614,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_show_cfg.set_defaults(func=cmd_show)
     p_show_prompt = show_sub.add_parser("prompt")
     add_common(p_show_prompt)
-    p_show_prompt.add_argument("--task", choices=("summary", "cleanup", "extraction", "prioritization"), default="summary",
+    p_show_prompt.add_argument("--task", choices=("summary", "cleanup"), default="summary",
                               help="Which task's prompt to show (default: summary).")
     p_show_prompt.set_defaults(func=cmd_show_prompt)
 

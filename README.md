@@ -60,26 +60,56 @@ zmm extract search --regex "budget|staffing" --output-dir /path/to/output
 
 ## Commands
 
+Every compound command also accepts `help` (e.g. `zmm list help`).
+
+### Inventory & reporting (read-only, no model calls)
+
 | Command | Description |
 |---------|-------------|
-| `zmm list prompts` | List available prompt files |
-| `zmm list models` | List available models from the API |
 | `zmm list meetings` | List all discovered meetings |
-| `zmm list missing` | Overview table of missing artifacts |
-| `zmm report status` | Detailed status report |
-| `zmm report counts` | Aggregate counts by year/month |
-| `zmm index` | Build/rebuild inventory metadata |
-| `zmm estimate summarize` | Estimate tokens before summarizing |
+| `zmm list missing [merged\|summaries\|raw]` | Overview table of missing artifacts |
+| `zmm list missing-merged` / `-summaries` / `-raw` | Focused missing-item lists |
+| `zmm list models [--provider NAME] [--show-stale]` | List models per provider with pricing |
+| `zmm list prompts` | List core + augmentation + example prompts |
+| `zmm report status` | Per-meeting status table |
+| `zmm report counts [--by year\|month\|both]` | Aggregate counts |
+| `zmm index [--rebuild]` | Write inventory metadata (`--rebuild` discards existing) |
+| `zmm write processing-json` | Write inventory metadata explicitly |
+| `zmm migrate legacy` | Import/index pre-existing on-disk output |
+| `zmm estimate summarize\|clean\|extract` | Estimate tokens and cost before model calls |
+
+### Inspection
+
+| Command | Description |
+|---------|-------------|
+| `zmm show config` | Show active configuration and sources |
+| `zmm show prompt [--task summary\|cleanup]` | Show the full model directive with source annotations |
+
+### Model-backed operations
+
+| Command | Description |
+|---------|-------------|
 | `zmm summarize raw` | Merge and summarize raw meetings |
 | `zmm summarize merged` | Summarize existing merged transcripts |
 | `zmm summarize files FILE...` | Summarize specific files |
 | `zmm fix missing summaries` | Summarize only where summaries are missing |
 | `zmm clean transcripts` | LLM-clean merged transcripts |
-| `zmm extract search` | Regex search across transcripts |
-| `zmm extract me items` | Extract items for configured person |
-| `zmm extract person items` | Extract items for a named person |
-| `zmm export aggregates` | Write yearly/monthly rollup files |
-| `zmm init config` | Generate a starter config file |
+
+### Extraction (local regex search, no model calls)
+
+| Command | Description |
+|---------|-------------|
+| `zmm extract search --regex PATTERN` | Regex search across transcripts |
+| `zmm extract me actions\|statements\|items` | Find lines mentioning you, filtered by kind |
+| `zmm extract person actions\|statements\|items --person ID` | Same for a named person profile |
+
+### Output management
+
+| Command | Description |
+|---------|-------------|
+| `zmm export aggregates [--period auto\|year\|month]` | Write rollup files |
+| `zmm delete raw` | Move processed raw dirs to `to-delete/` |
+| `zmm init config` | Generate a starter config file (interactive wizard) |
 
 ## Configuration
 
@@ -104,8 +134,6 @@ These ship with zmm in `prompts/` and provide the base instructions:
 - `meeting_generic.txt` — core summarization rules
 - `output_structured_notes.txt` — JSON output schema
 - `cleanup_transcript.txt` — transcript cleaning instructions
-- `extract_items.txt` — action item extraction
-- `prioritize_items.txt` — prioritization instructions
 
 ### User augmentation (personal, auto-appended)
 

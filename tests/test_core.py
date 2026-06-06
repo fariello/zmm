@@ -188,6 +188,44 @@ def test_merge_captions_collapses_same_speaker():
     assert "Second line" in result
 
 
+def test_merge_captions_crossing_midnight_order():
+    # A meeting that starts before midnight and continues after should keep
+    # chronological order (not sort 00:xx before 23:xx).
+    captions = (
+        "[Alice] 23:58:00: before midnight\n"
+        "[Bob] 00:02:00: after midnight\n"
+    )
+    result = zmm.merge_captions_and_chat(captions, [])
+    assert result.index("before midnight") < result.index("after midnight")
+
+
+def test_merge_no_sortkey_leak():
+    captions = "[Alice] 10:00:00: hello\n"
+    result = zmm.merge_captions_and_chat(captions, [])
+    assert "_sortkey" not in result
+
+
+# ----------------------------- Summary Validation ----------------------------- #
+
+
+def test_validate_summary_output_complete():
+    data = {k: "x" for k in zmm.SUMMARY_REQUIRED_KEYS}
+    assert zmm.validate_summary_output(data, label="m") == []
+
+
+def test_validate_summary_output_missing_fields():
+    data = {"improved_title": "x", "one_liner": "y"}
+    warnings = zmm.validate_summary_output(data, label="meeting.txt")
+    assert len(warnings) == 1
+    assert "missing fields" in warnings[0]
+    assert "high_level_summary" in warnings[0]
+
+
+def test_validate_summary_output_not_dict():
+    warnings = zmm.validate_summary_output([], label="m")  # type: ignore[arg-type]
+    assert warnings and "not a JSON object" in warnings[0]
+
+
 # ----------------------------- Inventory ----------------------------- #
 
 

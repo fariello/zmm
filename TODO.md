@@ -2,9 +2,7 @@
 
 ## Active
 
-- [ ] Implement `auto_clean_before_summarize`: when true, automatically run cleanup model on merged transcripts before summarizing (if no cleaned version exists)
-- [ ] Implement `aggregate_period` config default: use config value as fallback for `zmm export aggregates --period` (allow only auto, year, month)
-- [ ] Remove dead config fields: `source`, `no_temperature`, `include_all_model_summaries`
+(none — see Future)
 
 ## Future
 
