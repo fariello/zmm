@@ -38,10 +38,40 @@ USER_PROMPTS_DIR = Path.home() / ".config" / "zmm" / "prompts"
 LEGACY_CONFIG = "summarize_zoom_transcripts.cfg"
 CONFIG_NAME = "zoom_meeting_manager.cfg"
 
+# Default request timeout (seconds) for model/API calls.
+DEFAULT_API_TIMEOUT = 600
+
 CHECK = "✓"
 CROSS = "✗"
 WARN = "!"
 NA = "-"
+
+
+_DEBUG = False
+
+
+def debug(msg: str) -> None:
+    if _DEBUG:
+        print(f"DEBUG: {msg}", file=sys.stderr)
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write text atomically: write to a temp file in the same dir, then replace.
+
+    Prevents truncated/corrupt output if the process is interrupted mid-write.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp{os.getpid()}")
+    try:
+        tmp.write_text(content, encoding=encoding)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 # ----------------------------- Data Model ----------------------------- #
@@ -69,25 +99,30 @@ class MeetingRecord:
     expected_merged_path: str | None = None
     problems: list[str] = field(default_factory=list)
 
+    # NOTE: these properties trust paths set during inventory discovery, which
+    # only assigns a path after confirming the file exists (via glob/iterdir).
+    # This avoids re-stat()ing every file on each property access — important
+    # on slow network mounts where rendering accesses them many times.
+
     @property
     def has_raw(self) -> bool:
         return bool(self.caption_path or self.chat_path)
 
     @property
     def has_merged(self) -> bool:
-        return bool(self.merged_path and Path(self.merged_path).is_file())
+        return bool(self.merged_path)
 
     @property
     def has_cleaned(self) -> bool:
-        return any(Path(p).is_file() for p in self.cleaned_paths)
+        return bool(self.cleaned_paths)
 
     @property
     def has_summary(self) -> bool:
-        return any(Path(s.path).is_file() for s in self.summaries)
+        return bool(self.summaries)
 
     @property
     def has_summary_json(self) -> bool:
-        return any(s.json_path and Path(s.json_path).is_file() for s in self.summaries)
+        return any(s.json_path for s in self.summaries)
 
 
 @dataclass
@@ -197,8 +232,8 @@ def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: 
                 cmd.extend(["-a", align])
             subprocess.run(cmd, input=buf.getvalue(), text=True, check=True)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"vistab rendering failed, falling back to plain table: {exc}")
 
     if not plain and not shutil.which("vistab") and sys.stdout.isatty():
         print(colorize("Tip: install vistab for nicer tables.", "dim", color), file=sys.stderr)
@@ -236,7 +271,12 @@ def expand_env(value: str | None) -> str | None:
     m = re.fullmatch(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}", value)
     if m:
         return os.environ.get(m.group(1))
-    return os.path.expandvars(value)
+    # Only run shell-style expansion when the value actually references a
+    # variable ($VAR / ${VAR}); otherwise return literal so keys containing
+    # a '$' are not silently mangled.
+    if "$" in value:
+        return os.path.expandvars(value)
+    return value
 
 
 OPENCODE_CONFIG = Path.home() / ".config" / "opencode" / "opencode.json"
@@ -261,7 +301,11 @@ def _load_opencode_config() -> dict[str, Any] | None:
         return None
     try:
         return json.loads(OPENCODE_CONFIG.read_text(encoding="utf-8"))
-    except Exception:
+    except json.JSONDecodeError as exc:
+        print(f"WARNING: {OPENCODE_CONFIG} is not valid JSON ({exc}); ignoring it.", file=sys.stderr)
+        return None
+    except Exception as exc:
+        print(f"WARNING: could not read {OPENCODE_CONFIG}: {exc}; ignoring it.", file=sys.stderr)
         return None
 
 
@@ -417,7 +461,10 @@ def parse_partial_date(value: str, *, is_end: bool = False) -> date:
 def parse_date_range(value: str | None) -> tuple[date | None, date | None]:
     if not value:
         return None, None
-    parts = re.split(r"\s+(?:to)\s+|\.\.|:", value.strip(), maxsplit=1)
+    # Range separators: " to ", "..", or " : " (colon must be space-padded so it
+    # doesn't split times like 10:00:00). Dates here are date-only, but the
+    # padded-colon rule keeps the parser robust.
+    parts = re.split(r"\s+to\s+|\.\.|\s+:\s+", value.strip(), maxsplit=1)
     if len(parts) == 1:
         return parse_partial_date(parts[0]), parse_partial_date(parts[0], is_end=True)
     start = parse_partial_date(parts[0])
@@ -696,7 +743,7 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
             if match_lower and match_lower not in path.name.lower():
                 continue
 
-            # Try to match to an existing raw record by expected path
+            # Try to match to an existing raw record by expected path (exact)
             resolved = str(path.resolve())
             existing_key = expected_to_key.get(resolved)
             if existing_key and existing_key in records:
@@ -710,6 +757,16 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
             title = title.replace("-", " ").strip() or path.stem
             key = f"{meeting_date or year}-{slugify(title)}"
             rec = records.get(key)
+            # Fuzzy fallback: if no exact key match, link to a raw record that has
+            # the same date and no merged transcript yet (handles legacy files whose
+            # on-disk name diverges from clean_filename's slugging).
+            if not rec:
+                for cand in records.values():
+                    if (cand.raw_dir and not cand.merged_path
+                            and cand.meeting_date == meeting_date
+                            and slugify(cand.title) == slugify(title)):
+                        rec = cand
+                        break
             if not rec:
                 rec = MeetingRecord(id=key, title=title, meeting_date=meeting_date, merged_path=str(path), expected_merged_path=str(path))
                 records[key] = rec
@@ -886,15 +943,19 @@ def build_prompt(cfg: Config, args: argparse.Namespace, task: str = "summary", *
         label_parts.append("output_structured_notes")
 
     # 3. User augmentation (auto-appended from ~/.config/zmm/prompts/)
-    aug_files = discover_augmentation_files()
-    for name, path in aug_files:
-        if skip_corrections and name == "corrections":
-            label_parts.append("+corrections(skipped:cleaned)")
-            continue
-        clean = _load_augmentation_content(path)
-        if clean:
-            parts.append(f"## Additional context: {name}\n\n{clean}")
-            label_parts.append(f"+{name}")
+    #    Skipped entirely when --no-context is set (keeps personal context off the wire).
+    if not getattr(args, "no_context", False):
+        aug_files = discover_augmentation_files()
+        for name, path in aug_files:
+            if skip_corrections and name == "corrections":
+                label_parts.append("+corrections(skipped:cleaned)")
+                continue
+            clean = _load_augmentation_content(path)
+            if clean:
+                parts.append(f"## Additional context: {name}\n\n{clean}")
+                label_parts.append(f"+{name}")
+    else:
+        label_parts.append("+no-context")
 
     text = "\n\n".join(parts)
     return text, "core:" + "+".join(label_parts)
@@ -912,7 +973,7 @@ def client_for(cfg: Config):
         raise SystemExit("ERROR: openai package is not installed; model-backed commands cannot run.")
     if not cfg.api_key:
         raise SystemExit("ERROR: Missing API key. Configure [api] api_key or legacy api_key.")
-    kwargs = {"api_key": cfg.api_key}
+    kwargs: dict[str, Any] = {"api_key": cfg.api_key, "timeout": DEFAULT_API_TIMEOUT}
     if cfg.base_url:
         kwargs["base_url"] = cfg.base_url
     return openai.OpenAI(**kwargs)
@@ -979,8 +1040,17 @@ def save_diagnostic(kind: str, label: str, model: str, content: str, cfg: Config
     diag_dir = resolve_output_dir(args, cfg, required=False) / "Diagnostics" / year[:4]
     diag_dir.mkdir(parents=True, exist_ok=True)
     path = diag_dir / f"{safe_label}.{safe_model}.{kind}.txt"
-    path.write_text(content, encoding="utf-8")
+    atomic_write_text(path, content)
     return path
+
+
+def _scrub_secret(text: str, cfg: Config) -> str:
+    """Redact the configured API key (and obvious key-like tokens) from text."""
+    if cfg.api_key and cfg.api_key in text:
+        text = text.replace(cfg.api_key, "***REDACTED***")
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "***REDACTED***", text)
+    text = re.sub(r"(Bearer\s+)[A-Za-z0-9._-]{8,}", r"\1***REDACTED***", text)
+    return text
 
 
 def print_model_error(exc: Exception, *, model: str, operation: str, label: str, cfg: Config) -> None:
@@ -989,7 +1059,7 @@ def print_model_error(exc: Exception, *, model: str, operation: str, label: str,
     print(f"  Model:     {model}", file=sys.stderr)
     print(f"  Item:      {label}", file=sys.stderr)
     print(f"  Endpoint:  {cfg.base_url or 'default OpenAI endpoint'}", file=sys.stderr)
-    print(f"  Error:     {type(exc).__name__}: {exc}", file=sys.stderr)
+    print(f"  Error:     {_scrub_secret(f'{type(exc).__name__}: {exc}', cfg)}", file=sys.stderr)
     print("  Next:      Check API key, endpoint, model name, network access, and provider status.", file=sys.stderr)
 
 
@@ -1069,7 +1139,7 @@ def _cmd_list_models(args: argparse.Namespace, cfg: Config, color: bool, provide
         api_ok = False
         if api_key and openai is not None:
             try:
-                kwargs: dict[str, Any] = {"api_key": api_key}
+                kwargs: dict[str, Any] = {"api_key": api_key, "timeout": DEFAULT_API_TIMEOUT}
                 if base_url:
                     kwargs["base_url"] = base_url
                 client = openai.OpenAI(**kwargs)
@@ -1288,7 +1358,7 @@ def _list_models_live(base_url: str | None, api_key: str | None) -> list[str] | 
     if not api_key or openai is None:
         return None
     try:
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": DEFAULT_API_TIMEOUT}
         if base_url:
             kwargs["base_url"] = base_url
         client = openai.OpenAI(**kwargs)
@@ -1584,7 +1654,7 @@ confirm_model_calls = true
 # Terminal color mode: auto, always, never
 color = auto
 """
-    target.write_text(text, encoding="utf-8")
+    atomic_write_text(target, text)
     print(f"Wrote {target}")
     print("Next: edit paths/API settings, then run `zmm index --rebuild` and `zmm list missing`.")
 
@@ -1857,7 +1927,7 @@ def write_meetings_rollup(path: Path, records: list[MeetingRecord]) -> None:
     lines = []
     for rec in records:
         lines.append(f"{rec.meeting_date or 'Unknown'}\t{rec.title}\tmerged={rec.merged_path or ''}\tsummaries={len(rec.summaries)}\tproblems={', '.join(rec.problems)}")
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + ("\n" if lines else ""))
     print_file_report(path, len(records))
 
 
@@ -1868,7 +1938,7 @@ def write_transcripts_rollup(path: Path, records: list[MeetingRecord]) -> None:
         if not source or not Path(source).is_file():
             continue
         parts.append(section_header(rec, source) + Path(source).read_text(encoding="utf-8", errors="replace"))
-    path.write_text("\n\n".join(parts) + ("\n" if parts else ""), encoding="utf-8")
+    atomic_write_text(path, "\n\n".join(parts) + ("\n" if parts else ""))
     print_file_report(path, len(parts))
 
 
@@ -1878,7 +1948,7 @@ def write_summaries_rollup(path: Path, records: list[MeetingRecord]) -> None:
         for summary in rec.summaries:
             if Path(summary.path).is_file():
                 parts.append(section_header(rec, summary.path) + Path(summary.path).read_text(encoding="utf-8", errors="replace"))
-    path.write_text("\n\n".join(parts) + ("\n" if parts else ""), encoding="utf-8")
+    atomic_write_text(path, "\n\n".join(parts) + ("\n" if parts else ""))
     print_file_report(path, len(parts))
 
 
@@ -1951,8 +2021,10 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     client = client_for(cfg)
     files = [r.merged_path for r in records if r.merged_path and Path(r.merged_path).is_file()]
     confirm_model_operation(args, cfg, "clean", files, model)
+    n_done = n_skipped = n_failed = 0
     for rec in records[: args.max or None]:
         if not rec.merged_path or not Path(rec.merged_path).is_file():
+            n_skipped += 1
             continue
         year = (rec.meeting_date or str(date.today()))[:4]
         out_dir = resolve_output_dir(args, cfg, required=False) / f"Cleaned-Transcripts-{year}"
@@ -1960,6 +2032,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
         out_path = out_dir / f"{Path(rec.merged_path).stem}.{model.replace('/', '--')}.cleaned.txt"
         if out_path.exists() and not args.clobber:
             print(f"Skipping existing cleaned transcript: {out_path}")
+            n_skipped += 1
             continue
         if args.dry_run:
             print(f"Would clean {rec.merged_path} with {model} -> {out_path}")
@@ -1970,11 +2043,15 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             cleaned = response.choices[0].message.content or ""
         except Exception as exc:
             print_model_error(exc, model=model, operation="clean transcript", label=rec.merged_path, cfg=cfg)
+            n_failed += 1
             if args.ignore_model_errors:
                 continue
             raise SystemExit(1)
-        out_path.write_text(cleaned.strip() + "\n", encoding="utf-8")
+        atomic_write_text(out_path, cleaned.strip() + "\n")
         print(f"Wrote {out_path}")
+        n_done += 1
+    if not args.dry_run:
+        print(f"\nDone: {n_done} cleaned, {n_skipped} skipped, {n_failed} failed.")
 
 
 def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
@@ -2005,7 +2082,7 @@ def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingReco
         out_dir = resolve_output_dir(args, cfg, required=False) / f"Merged-Transcripts-{year}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = Path(rec.expected_merged_path or out_dir / expected_merged_name(dir_path.name))
-        out_path.write_text(merged, encoding="utf-8")
+        atomic_write_text(out_path, merged)
         rec.merged_path = str(out_path)
         changed = True
         print(f"Wrote {out_path}")
@@ -2059,7 +2136,10 @@ def cmd_extract(args: argparse.Namespace, cfg: Config) -> None:
             kw = _ACTION_KEYWORDS + _STATEMENT_KEYWORDS
         kind_regex = re.compile("|".join(re.escape(k) for k in kw), re.IGNORECASE) if kw else None
 
-    regex = re.compile(pattern, re.IGNORECASE)
+    try:
+        regex = re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise SystemExit(f"ERROR: invalid search pattern: {exc}")
     rows = []
     for r in records:
         sources = [r.merged_path] + r.cleaned_paths + [s.path for s in r.summaries]
@@ -2111,7 +2191,7 @@ def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace
             if args.ignore_model_errors:
                 continue
             raise SystemExit(1)
-        out_path.write_text(cleaned.strip() + "\n", encoding="utf-8")
+        atomic_write_text(out_path, cleaned.strip() + "\n")
         rec.cleaned_paths.append(str(out_path))
         print(f"  Wrote {out_path}")
     return records
@@ -2121,15 +2201,26 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     records = merge_raw_records(args, cfg) if args.summarize_object == "raw" else get_records(args, cfg)
     if args.summarize_object == "files":
         records = records_from_files(args.files)
+    # Apply --max up front so merge/auto-clean/summarize all operate on the
+    # same bounded set (avoids paying for cleanup on records we won't summarize).
+    if args.max:
+        records = records[: args.max]
     # Auto-clean before summarizing if configured
     if cfg.auto_clean_before_summarize:
         records = _auto_clean_if_needed(records, args, cfg)
     model = get_model(cfg, args, "summary")
     planned_sources = [choose_summary_source(r, cfg, args) for r in records]
     confirm_model_operation(args, cfg, "summarize", [s for s in planned_sources if s], model)
-    for rec in records[: args.max or None]:
+    n_done = n_skipped = n_failed = 0
+    for rec in records:
         source = choose_summary_source(rec, cfg, args)
         if not source:
+            n_skipped += 1
+            continue
+        # Skip if a summary for this model already exists, unless --clobber
+        if not args.clobber and summary_exists(rec, source, model, cfg):
+            print(f"Skipping existing summary: {rec.title} [{model}] (use --clobber to overwrite)")
+            n_skipped += 1
             continue
         if args.dry_run:
             print(f"Would summarize {source} with {model}")
@@ -2140,6 +2231,7 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         text = Path(source).read_text(encoding="utf-8", errors="replace")
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}])
         if not data:
+            n_failed += 1
             continue
         # Validate against the summary schema (non-fatal: warn, save diagnostic, still render)
         warnings = validate_summary_output(data, label=Path(source).name)
@@ -2148,6 +2240,18 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
                 print(f"  \033[33m! {w}\033[0m", file=sys.stderr)
             save_diagnostic("schema-warnings", source, model, "\n".join(warnings), cfg, args)
         write_summary_outputs(rec, source, data, model, prompt_label, cfg)
+        n_done += 1
+    if not args.dry_run:
+        print(f"\nDone: {n_done} summarized, {n_skipped} skipped, {n_failed} failed.")
+
+
+def summary_exists(rec: MeetingRecord, source: str, model: str, cfg: Config) -> bool:
+    """Return True if a summary file for this source+model already exists."""
+    year = (rec.meeting_date or str(date.today()))[:4]
+    out_dir = Path(cfg.output_dir or ".") / f"Summaries-{year}"
+    safe_model = model.replace("/", "--")
+    stem = Path(source).stem
+    return (out_dir / f"{stem}.{safe_model}.summary.json").is_file()
 
 
 def choose_summary_source(rec: MeetingRecord, cfg: Config, args: argparse.Namespace) -> str | None:
@@ -2234,8 +2338,8 @@ def write_summary_outputs(rec: MeetingRecord, source: str, model_data: dict[str,
         "metadata": metadata,
     }
 
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    txt_path.write_text(render_summary_text(payload), encoding="utf-8")
+    atomic_write_text(json_path, json.dumps(payload, indent=2, ensure_ascii=False))
+    atomic_write_text(txt_path, render_summary_text(payload))
     print(f"Wrote {txt_path}")
     print(f"Wrote {json_path}")
 
@@ -2380,7 +2484,7 @@ def write_processing_json(records: list[MeetingRecord], cfg: Config, args: argpa
             "period": {"label": year},
             "meetings": [asdict(v) for v in vals],
         }
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"Wrote {path}")
 
 
@@ -2473,6 +2577,8 @@ def add_common(parser: argparse.ArgumentParser, *, is_root: bool = False) -> Non
                         help="Skip confirmation prompts before model-backed bulk operations.")
     parser.add_argument("--max-input-tokens", type=int, metavar="N", default=D,
                         help="Abort if estimated input tokens exceed this limit.")
+    parser.add_argument("--debug", action="store_true", default=D if not is_root else False,
+                        help="Print diagnostic information (timings, per-item outcomes, internal errors).")
 
 
 class _SubcommandParser(argparse.ArgumentParser):
@@ -2522,6 +2628,9 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
                         help="Add a person prompt layer (e.g. people/gabriel).")
     parser.add_argument("--prompt-correction", action="append", metavar="NAME",
                         help="Add a corrections prompt layer (e.g. corrections/uri).")
+    parser.add_argument("--no-context", action="store_true",
+                        help="Do not send personal augmentation files (~/.config/zmm/prompts/) "
+                             "to the model. Keeps names, org details, etc. off the wire.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2691,8 +2800,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    global _DEBUG
     parser = build_parser()
     args = parser.parse_args()
+    _DEBUG = bool(getattr(args, "debug", False))
     cfg = load_config(getattr(args, "config", None), require_api=args.command in ("summarize", "fix"))
     # CLI overrides config for paths
     for attr in ("input_dir", "output_dir"):

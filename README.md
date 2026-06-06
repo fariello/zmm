@@ -187,8 +187,36 @@ This skips the normal core+augmentation assembly and uses only the specified lay
 --plain              Disable vistab and colors
 --color MODE         Color mode: auto, always, never
 --yes                Skip confirmation prompts
+--no-context         Don't send personal augmentation files to the model
+--debug              Print diagnostic information
 --version            Show version
 ```
+
+## Data & Privacy
+
+Model-backed commands (`summarize`, `clean`) send data to the configured API
+endpoint. Be aware of what leaves your machine:
+
+- **Transcript content** — the full merged/cleaned transcript is sent as the
+  user message.
+- **Personal context** — files in `~/.config/zmm/prompts/` (your name, role,
+  organization, colleagues, etc.) are sent as part of the system prompt.
+  Use `--no-context` to suppress them for a given run.
+- **Endpoint** — data goes to whatever `base_url` is configured (or the
+  default OpenAI endpoint). Point zmm only at endpoints you trust with
+  meeting content.
+
+zmm prompts for confirmation before bulk model operations and shows an
+estimated token count and cost. Use `--dry-run` to preview without sending
+anything.
+
+**Diagnostics retention**: when a model returns invalid JSON or a schema
+warning, zmm writes the raw response to `<output-dir>/Diagnostics/YYYY/`.
+These files may contain transcript content and are not auto-deleted; remove
+them when no longer needed.
+
+API keys are read from config or `~/.config/opencode/opencode.json` and are
+redacted from error output. They are never written to summaries or logs.
 
 ## License
 

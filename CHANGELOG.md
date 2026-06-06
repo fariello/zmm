@@ -6,6 +6,24 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security & Reliability (Part-2 audit)
+- Atomic writes for all output artifacts (summaries, transcripts, processing JSON)
+  to prevent corruption on interruption.
+- Request timeout on all model/API calls (default 600s).
+- `summarize` now skips meetings that already have a summary for the model
+  unless `--clobber`; both `summarize` and `clean` print an end-of-run summary
+  (N done / skipped / failed).
+- `--max` now bounds the auto-clean step in `summarize` (no longer cleans more
+  than it summarizes).
+- `--no-context` flag to keep personal augmentation files off the wire.
+- API keys are redacted from model error output.
+- `expand_env` no longer mangles literal keys containing `$`.
+- User regex in `extract search` is validated with a clean error message.
+- `--date-range` colon separator must be space-padded (won't split times).
+- Warns when `~/.config/opencode/opencode.json` is malformed instead of silently ignoring.
+- `--debug` flag for diagnostic output.
+- Documented data egress, diagnostics retention, and key handling in README.
+
 ### Added
 - `help` subcommand on every compound command (e.g. `zmm list help`).
 - `zmm show config` — display active configuration, prompt sources, models, paths.

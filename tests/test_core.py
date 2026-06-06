@@ -275,3 +275,132 @@ def test_help_exits_zero():
     )
     assert result.returncode == 0
     assert "zmm" in result.stdout
+
+
+# ----------------------------- P2 audit coverage ----------------------------- #
+
+import pytest
+import argparse
+
+
+# P2-T1: date range error cases
+def test_parse_date_range_start_after_end():
+    with pytest.raises(argparse.ArgumentTypeError):
+        zmm.parse_date_range("2026-03 to 2026-01")
+
+
+def test_parse_date_range_invalid_component():
+    with pytest.raises(argparse.ArgumentTypeError):
+        zmm.parse_date_range("notadate")
+
+
+def test_parse_date_range_padded_colon_separator():
+    start, end = zmm.parse_date_range("2026-01 : 2026-02")
+    assert start == date(2026, 1, 1)
+    assert end == date(2026, 2, 28)
+
+
+def test_parse_date_range_does_not_split_on_unpadded_colon():
+    # A bare colon (as in a time) must not be treated as a range separator.
+    # "2026" with a trailing time-like token should fail cleanly, not silently split.
+    with pytest.raises(argparse.ArgumentTypeError):
+        zmm.parse_date_range("2026-01-01:bogus")
+
+
+# P2-T4: expand_env
+def test_expand_env_literal_with_dollar_preserved(monkeypatch):
+    # A literal key with no var reference is returned unchanged even with '$'.
+    assert zmm.expand_env("sk-abc$def") == "sk-abc$def"
+
+
+def test_expand_env_env_ref(monkeypatch):
+    monkeypatch.setenv("ZMM_TEST_KEY", "secret123")
+    assert zmm.expand_env("{env:ZMM_TEST_KEY}") == "secret123"
+
+
+def test_expand_env_shell_var(monkeypatch):
+    monkeypatch.setenv("ZMM_TEST_KEY", "secret123")
+    assert zmm.expand_env("${ZMM_TEST_KEY}") == "secret123"
+
+
+# P2-S3: secret scrubbing
+def test_scrub_secret_redacts_configured_key():
+    cfg = zmm.Config(api_key="sk-supersecretvalue123")
+    out = zmm._scrub_secret("error using sk-supersecretvalue123 now", cfg)
+    assert "sk-supersecretvalue123" not in out
+    assert "REDACTED" in out
+
+
+def test_scrub_secret_redacts_skstyle_token():
+    cfg = zmm.Config()
+    out = zmm._scrub_secret("leaked sk-ABCDEFGH12345678 here", cfg)
+    assert "sk-ABCDEFGH12345678" not in out
+
+
+# P2-T7: extract kind filtering keyword sets differ
+def test_extract_keyword_sets_differ():
+    assert zmm._ACTION_KEYWORDS != zmm._STATEMENT_KEYWORDS
+    assert "i'll" in zmm._ACTION_KEYWORDS
+    assert "i think" in zmm._STATEMENT_KEYWORDS
+
+
+# P2-E1: atomic_write_text
+def test_atomic_write_text(tmp_path):
+    target = tmp_path / "sub" / "out.txt"
+    zmm.atomic_write_text(target, "hello world")
+    assert target.read_text() == "hello world"
+    # no temp files left behind
+    leftovers = list((tmp_path / "sub").glob(".*tmp*"))
+    assert leftovers == []
+
+
+def test_atomic_write_text_overwrite(tmp_path):
+    target = tmp_path / "out.txt"
+    zmm.atomic_write_text(target, "first")
+    zmm.atomic_write_text(target, "second")
+    assert target.read_text() == "second"
+
+
+# P2-T2: summary_exists
+def test_summary_exists(tmp_path):
+    cfg = zmm.Config(output_dir=str(tmp_path))
+    rec = zmm.MeetingRecord(id="x", title="Test", meeting_date="2026-01-15")
+    source = str(tmp_path / "2026-01-15-Test.txt")
+    assert not zmm.summary_exists(rec, source, "gpt-4o", cfg)
+    sdir = tmp_path / "Summaries-2026"
+    sdir.mkdir()
+    (sdir / "2026-01-15-Test.gpt-4o.summary.json").write_text("{}")
+    assert zmm.summary_exists(rec, source, "gpt-4o", cfg)
+
+
+# P2-T6: inventory dedup links raw + merged for legacy-named files
+def test_discover_inventory_links_raw_and_merged(tmp_path):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    meeting = input_dir / "2026-01-24 09.00.00 Board Retreat"
+    meeting.mkdir(parents=True)
+    (meeting / "meeting_saved_closed_caption.txt").write_text("[A] 10:00:00: hi")
+    merged_dir = output_dir / "Merged-Transcripts-2026"
+    merged_dir.mkdir(parents=True)
+    # Matches expected_merged_name for the raw dir
+    name = zmm.expected_merged_name("2026-01-24 09.00.00 Board Retreat")
+    (merged_dir / name).write_text("merged body")
+    records = zmm.discover_inventory(str(input_dir), str(output_dir))
+    assert len(records) == 1
+    assert records[0].has_raw
+    assert records[0].has_merged
+
+
+# P2-T5: opencode key resolution
+def test_resolve_opencode_key_literal():
+    assert zmm._resolve_opencode_key("sk-literal") == "sk-literal"
+
+
+def test_resolve_opencode_key_file(tmp_path):
+    keyfile = tmp_path / "k.key"
+    keyfile.write_text("filekey123\n")
+    assert zmm._resolve_opencode_key(f"{{file:{keyfile}}}") == "filekey123"
+
+
+def test_resolve_opencode_key_missing_file(tmp_path):
+    assert zmm._resolve_opencode_key(f"{{file:{tmp_path}/nope.key}}") is None
