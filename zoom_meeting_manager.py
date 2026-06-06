@@ -2962,11 +2962,11 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prompt-layer", action="append", metavar="NAME",
                         help="Add a prompt layer by name (can be repeated).")
     parser.add_argument("--prompt-context", action="append", metavar="NAME",
-                        help="Add a context prompt layer (e.g. contexts/uri).")
+                        help="Add a context prompt layer by name.")
     parser.add_argument("--prompt-person", action="append", metavar="NAME",
-                        help="Add a person prompt layer (e.g. people/gabriel).")
+                        help="Add a person prompt layer by name.")
     parser.add_argument("--prompt-correction", action="append", metavar="NAME",
-                        help="Add a corrections prompt layer (e.g. corrections/uri).")
+                        help="Add a corrections prompt layer by name.")
     parser.add_argument("--no-context", action="store_true",
                         help="Do not send personal augmentation files (~/.config/zmm/prompts/) "
                              "to the model. Keeps names, org details, etc. off the wire.")

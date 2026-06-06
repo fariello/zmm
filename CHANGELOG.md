@@ -29,6 +29,11 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   and TODO.
 - Added a "Releasing" section to the README documenting the release procedure.
 
+### Final ship review (Part-8)
+- Removed stale `people/gabriel` / `contexts/uri` / `corrections/uri` examples
+  from `--prompt-*` help text (leftover from the removed subdirectory prompt
+  convention).
+
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line
   for piping into other tools (P5-F2).
