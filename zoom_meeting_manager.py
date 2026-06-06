@@ -38,7 +38,34 @@ except Exception:  # pragma: no cover - fall back to heuristic if unavailable
     tiktoken = None
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROMPTS_DIR = SCRIPT_DIR / "prompts"
+
+
+def _find_data_dir(name: str) -> Path:
+    """Locate a bundled data directory (``prompts`` or ``schemas``) that works
+    in both source/editable checkouts and installed wheels.
+
+    Resolution order:
+      1. Next to this module (source checkout, editable install, ``./zmm``).
+      2. Via importlib.resources for the installed data package (wheel install).
+    Returns a Path even if the directory does not exist (callers handle absence).
+    """
+    local = SCRIPT_DIR / name
+    if local.is_dir():
+        return local
+    try:
+        from importlib import resources
+        res = resources.files(name)
+        # res is a Traversable; for filesystem-backed installs this is a real path.
+        p = Path(str(res))
+        if p.is_dir():
+            return p
+    except (ModuleNotFoundError, TypeError, AttributeError):
+        pass
+    return local
+
+
+PROMPTS_DIR = _find_data_dir("prompts")
+SCHEMAS_DIR = _find_data_dir("schemas")
 USER_PROMPTS_DIR = Path.home() / ".config" / "zmm" / "prompts"
 LEGACY_CONFIG = "summarize_zoom_transcripts.cfg"
 CONFIG_NAME = "zoom_meeting_manager.cfg"

@@ -57,6 +57,10 @@ pip install -e .[dev]      # + openai, pytest, pytest-cov for contributors
 ./zmm --help
 ```
 
+The `./zmm` wrapper is a POSIX shell script. On Windows, use the installed
+`zmm` console script (created by `pip install`) or run
+`python zoom_meeting_manager.py ...` directly.
+
 ## Quick Start
 
 ```bash

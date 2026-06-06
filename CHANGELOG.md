@@ -4,7 +4,20 @@ All notable changes to zmm are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.0] - 2026-06-06
+
+Initial release. Standalone `zmm` extracted from a larger repository, then
+hardened across correctness, security, tests, docs, usability, and packaging.
+
+### Packaging (Part-6 audit)
+- Bundled `prompts/` and `schemas/` now ship in the wheel/sdist (made
+  importable data packages; resolved via importlib.resources with a source-tree
+  fallback). Previously a non-editable `pip install` produced a tool that could
+  not find its core prompts.
+- Single-source version: `pyproject.toml` reads the version dynamically from
+  `zoom_meeting_manager.__version__`.
+- Added `MANIFEST.in` for sdist completeness.
+- Added a `build` dependency to the `[dev]` extra.
 
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line
@@ -130,8 +143,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - Unused bundled prompts `extract_items.txt` and `prioritize_items.txt`.
 - Dead `SummaryRecord` fields.
 
-## [0.1.0]
-
+### Baseline
 - Initial standalone `zmm` extracted from a larger repository.
 - Core CLI: inventory, summarize, clean, report, export, extract.
 - MIT licensed, packaged via pyproject.toml, README, tests.

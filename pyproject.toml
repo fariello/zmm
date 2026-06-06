@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zmm"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Zoom Meeting Manager — inventory, summarize, extract, and report on meeting transcripts"
 readme = "README.md"
 license = {text = "MIT"}
@@ -32,16 +32,26 @@ classifiers = [
 
 [project.optional-dependencies]
 api = ["openai>=1.0"]
-dev = ["openai>=1.0", "pytest>=7.0", "pytest-cov>=4.0"]
+dev = ["openai>=1.0", "pytest>=7.0", "pytest-cov>=4.0", "build>=1.0"]
 
 [project.scripts]
 zmm = "zoom_meeting_manager:main"
 
 [tool.setuptools]
+# Ship the CLI as a single module plus the bundled data packages.
 py-modules = ["zoom_meeting_manager"]
 
+[tool.setuptools.dynamic]
+version = {attr = "zoom_meeting_manager.__version__"}
+
+[tool.setuptools.packages.find]
+# Include the bundled data directories (made importable via __init__.py) so
+# prompts/ and schemas/ ship in the wheel and resolve via importlib.resources.
+include = ["prompts*", "schemas*"]
+
 [tool.setuptools.package-data]
-"*" = ["prompts/**/*.txt"]
+prompts = ["*.txt", "**/*.txt"]
+schemas = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
