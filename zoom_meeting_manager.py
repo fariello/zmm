@@ -991,13 +991,83 @@ def cmd_index(args: argparse.Namespace, cfg: Config) -> None:
 
 def _ask(prompt: str, default: str = "") -> str:
     """Ask a question interactively, returning the answer or default."""
-    suffix = f" [{default}]: " if default else ": "
+    suffix = f" \033[36m[{default}]\033[0m: " if default else ": "
     try:
         answer = input(prompt + suffix).strip()
     except (EOFError, KeyboardInterrupt):
         print()
         answer = ""
     return answer or default
+
+
+def _ask_yn(prompt: str, default: bool = True) -> bool:
+    """Ask a yes/no question."""
+    hint = "Y/n" if default else "y/N"
+    suffix = f" \033[36m[{hint}]\033[0m: "
+    try:
+        answer = input(prompt + suffix).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    if not answer:
+        return default
+    return answer.startswith("y")
+
+
+def _w_bold(text: str) -> str:
+    return f"\033[1m{text}\033[0m"
+
+
+def _w_section(title: str) -> None:
+    print(f"\n\033[1;34m{'─' * 3} {title} {'─' * (36 - len(title))}\033[0m")
+
+
+def _w_info(text: str) -> None:
+    print(f"  \033[37m{text}\033[0m")
+
+
+def _w_example(text: str) -> None:
+    print(f"    \033[36m{text}\033[0m")
+
+
+def _w_ok(text: str) -> None:
+    print(f"  \033[32m✓ {text}\033[0m")
+
+
+def _w_warn(text: str) -> None:
+    print(f"  \033[33m! {text}\033[0m")
+
+
+def _check_dir(label: str, path_str: str) -> str:
+    """Validate a directory path — warn and offer to create if it doesn't exist."""
+    if not path_str:
+        return path_str
+    p = Path(path_str).expanduser()
+    if p.is_dir():
+        _w_ok(f"{label} exists: {p}")
+    else:
+        _w_warn(f"{label} does not exist: {p}")
+        if _ask_yn(f"    Create {p}?", default=True):
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                _w_ok(f"Created {p}")
+            except OSError as e:
+                _w_warn(f"Could not create: {e}")
+    return path_str
+
+
+def _list_models_live(base_url: str | None, api_key: str | None) -> list[str] | None:
+    """Try to fetch model list from the API. Returns sorted list or None on failure."""
+    if not api_key or openai is None:
+        return None
+    try:
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        client = openai.OpenAI(**kwargs)
+        return sorted(m.id for m in client.models.list().data)
+    except Exception:
+        return None
 
 
 def cmd_init(args: argparse.Namespace, cfg: Config) -> None:
@@ -1009,6 +1079,7 @@ def cmd_init(args: argparse.Namespace, cfg: Config) -> None:
     # Probe opencode.json for defaults
     oc = _load_opencode_config()
     oc_api_key = ""
+    oc_api_key_resolved: str | None = None
     oc_base_url = ""
     oc_models: list[str] = []
     oc_provider_name = ""
@@ -1020,6 +1091,7 @@ def cmd_init(args: argparse.Namespace, cfg: Config) -> None:
             resolved = _resolve_opencode_key(key_raw) if key_raw else None
             if resolved:
                 oc_api_key = "(from opencode.json)"
+                oc_api_key_resolved = resolved
                 oc_base_url = opts.get("baseURL", "")
                 oc_provider_name = pinfo.get("name") or pname
                 oc_models = sorted((pinfo.get("models") or {}).keys())
@@ -1036,105 +1108,136 @@ def cmd_init(args: argparse.Namespace, cfg: Config) -> None:
 
     # Interactive wizard when stdin is a terminal
     if sys.stdin.isatty() and not getattr(args, "yes", False):
-        print("zmm config wizard")
-        print("=" * 40)
+        print()
+        print(_w_bold("  zmm config wizard"))
+        print(f"  \033[34m{'━' * 38}\033[0m")
         print()
 
         # Opencode.json detection
         if oc:
-            print(f"  Detected: ~/.config/opencode/opencode.json")
-            print(f"  Provider: {oc_provider_name}")
-            print(f"  API key:  found")
+            _w_ok(f"Detected: ~/.config/opencode/opencode.json")
+            _w_info(f"Provider: {_w_bold(oc_provider_name)}")
+            _w_info(f"API key:  {_w_bold('configured')}")
             if oc_base_url:
-                print(f"  Base URL: {oc_base_url}")
-            print(f"  Models:   {len(oc_models)} available")
+                _w_info(f"Base URL: {oc_base_url}")
+            _w_info(f"Models:   {len(oc_models)} available")
             print()
-            print("  zmm will use opencode.json for API access automatically.")
-            print("  You only need to set values here if you want to OVERRIDE it.")
-            print()
+            _w_info("zmm uses opencode.json for API access automatically.")
+            _w_info("Only set values below if you want to " + _w_bold("override") + " it.")
         else:
-            print("  No ~/.config/opencode/opencode.json found.")
-            print("  You'll need to provide API credentials below.")
-            print()
+            _w_warn("No ~/.config/opencode/opencode.json found.")
+            _w_info("You'll need to provide API credentials below.")
+        print()
 
         # Input dir
-        print("─── Input Directory ───")
-        print("  Where Zoom stores raw meeting recordings.")
-        print("  Each meeting is a folder like: 2026-06-04 15.29.53 Meeting Title/")
-        print("  containing meeting_saved_closed_caption.txt and/or meeting_saved_chat.txt")
+        _w_section("Input Directory")
+        _w_info("Where Zoom stores raw meeting recordings.")
+        _w_info("Each meeting is a folder like:")
+        _w_example("2026-06-04 15.29.53 Meeting Title/")
+        _w_info("containing:")
+        _w_example("meeting_saved_closed_caption.txt")
+        _w_example("meeting_saved_chat.txt")
         print()
         input_dir = _ask("  input_dir", input_dir)
+        _check_dir("input_dir", input_dir)
         print()
 
         # Output dir
-        print("─── Output Directory ───")
-        print("  Where zmm writes processed output. It will create subdirectories:")
-        print("    Merged-Transcripts-YYYY/   (merged caption+chat files)")
-        print("    Summaries-YYYY/            (LLM-generated summaries)")
-        print("    Cleaned-Transcripts-YYYY/  (LLM-cleaned transcripts)")
+        _w_section("Output Directory")
+        _w_info("Where zmm writes processed output. Creates subdirectories:")
+        _w_example("Merged-Transcripts-YYYY/   (merged caption+chat)")
+        _w_example("Summaries-YYYY/            (LLM-generated summaries)")
+        _w_example("Cleaned-Transcripts-YYYY/  (LLM-cleaned transcripts)")
         print()
         output_dir = _ask("  output_dir", output_dir)
+        _check_dir("output_dir", output_dir)
         print()
 
         # API settings
         if oc:
-            print("─── API Settings (optional — opencode.json provides these) ───")
-            print("  Leave blank to use opencode.json. Only set if you want a different endpoint.")
+            _w_section("API Settings (optional)")
+            _w_info("opencode.json provides API access. Leave blank to use it.")
+            _w_info("Only set a base_url if you want a " + _w_bold("different") + " endpoint.")
         else:
-            print("─── API Settings ───")
-            print("  zmm needs an OpenAI-compatible API endpoint for summarization.")
-            print("  You can use OpenAI directly, or a gateway like AWS Bedrock.")
+            _w_section("API Settings")
+            _w_info("zmm needs an OpenAI-compatible API for summarization.")
+            _w_info("You can use OpenAI directly, or a compatible gateway.")
         print()
-        print("  base_url examples:")
-        print("    (blank)                          → OpenAI default")
-        print("    https://llmgw.its.uri.edu/v1     → custom gateway")
-        print("    https://api.openai.com/v1        → explicit OpenAI")
+        _w_info("base_url examples:")
+        _w_example("(blank)                          → OpenAI default")
+        _w_example("https://api.openai.com/v1        → explicit OpenAI")
+        _w_example("https://llmgw.example.com/v1     → custom gateway")
         print()
         base_url = _ask("  base_url", base_url)
         print()
 
         if not oc:
-            print("  api_key: Your API key, or use {env:VAR_NAME} to read from an")
-            print("  environment variable at runtime.")
-            print("    Examples: sk-abc123..., {env:OPENAI_API_KEY}, {env:MY_KEY}")
+            _w_info("api_key: Your API key, or an env var reference.")
+            _w_info("Use {env:VAR_NAME} to read from environment at runtime.")
+            _w_example("{env:OPENAI_API_KEY}")
+            _w_example("sk-abc123...")
             print()
             api_key = _ask("  api_key", api_key)
             print()
         else:
             api_key = ""
 
-        # Model
-        print("─── Summary Model ───")
-        print("  The LLM model used for meeting summarization.")
+        # Model — offer to list models
+        _w_section("Summary Model")
+        _w_info("The LLM model used for meeting summarization.")
+        print()
+
+        # Try to show available models
+        available_models: list[str] = []
         if oc_models:
-            print(f"  Available from {oc_provider_name} ({len(oc_models)} models):")
-            # Show a few representative models
-            shown = oc_models[:8]
-            for m in shown:
-                print(f"    {m}")
-            if len(oc_models) > 8:
-                print(f"    ... and {len(oc_models) - 8} more (run: zmm list models)")
-            print()
-            print("  Leave blank to let zmm pick from opencode.json automatically.")
+            available_models = oc_models
         else:
-            print("  Examples: gpt-4o, o4-mini, its_direct/pt2-qwen3-coder-next-us")
+            # Try a live API call if we have credentials
+            live_key = oc_api_key_resolved or (api_key if not api_key.startswith("{") else None)
+            live_url = base_url or oc_base_url or None
+            if live_key:
+                _w_info("Fetching available models from API...")
+                live = _list_models_live(live_url, live_key)
+                if live:
+                    available_models = live
+                    _w_ok(f"Found {len(live)} models.")
+                else:
+                    _w_warn("Could not fetch models. You can set one manually.")
+
+        if available_models:
+            if _ask_yn("  List available models?", default=True):
+                print()
+                for i, m in enumerate(available_models):
+                    print(f"    \033[36m{m}\033[0m")
+                    if i >= 24:
+                        remaining = len(available_models) - 25
+                        if remaining > 0:
+                            _w_info(f"... and {remaining} more")
+                        break
+            print()
+            _w_info("Leave blank to let zmm auto-select the cheapest model.")
+        else:
+            _w_info("Examples:")
+            _w_example("gpt-4o")
+            _w_example("o4-mini")
+            _w_example("its_direct/pt2-qwen3-coder-next-us")
         print()
         summary_model = _ask("  summary_model", summary_model)
         print()
 
         # Person
-        print("─── Person Profile (for extraction) ───")
-        print("  zmm can extract action items and statements mentioning you.")
-        print("  Your display name and aliases help it find relevant content.")
+        _w_section("Person Profile")
+        _w_info("zmm can extract action items and statements mentioning you.")
+        _w_info("Your display name and aliases help it find relevant content.")
         print()
-        print("  display_name: Your full name as it might appear in notes.")
-        print("    Example: Gabriel Fariello")
+        _w_info("display_name: Your full name as it appears in meeting notes.")
+        _w_example("Gabriel Fariello")
         print()
         display_name = _ask("  display_name", display_name)
         print()
-        print("  aliases: Other names/spellings that refer to you in transcripts.")
-        print("  Zoom often misspells names. Include common variants.")
-        print("    Example: Gabriel, Gabriele, Gabe, G. Fariello")
+        _w_info("aliases: Other names/spellings in transcripts (comma-separated).")
+        _w_info("Include common Zoom misspellings of your name.")
+        _w_example("Gabriel, Gabriele, Gabe, G. Fariello")
         print()
         aliases = _ask("  aliases", aliases)
         print()
