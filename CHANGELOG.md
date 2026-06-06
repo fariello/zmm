@@ -1,3 +1,6 @@
+<!-- nav -->
+[README](README.md) · **Changelog** · [TODO](TODO.md) · [License](LICENSE)
+
 # Changelog
 
 All notable changes to zmm are documented here.
@@ -18,6 +21,13 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   `zoom_meeting_manager.__version__`.
 - Added `MANIFEST.in` for sdist completeness.
 - Added a `build` dependency to the `[dev]` extra.
+
+### Polish (Part-7 hardening)
+- The "openai not installed" error now tells you how to fix it
+  (`pip install 'zmm[api]'`).
+- Added inter-document navigation bars (top and bottom) to README, CHANGELOG,
+  and TODO.
+- Added a "Releasing" section to the README documenting the release procedure.
 
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line
@@ -147,3 +157,7 @@ hardened across correctness, security, tests, docs, usability, and packaging.
 - Initial standalone `zmm` extracted from a larger repository.
 - Core CLI: inventory, summarize, clean, report, export, extract.
 - MIT licensed, packaged via pyproject.toml, README, tests.
+
+---
+
+[README](README.md) · [Back to top](#changelog) · [TODO](TODO.md) · [License](LICENSE)

@@ -1,3 +1,6 @@
+<!-- nav -->
+[README](README.md) · [Changelog](CHANGELOG.md) · **TODO** · [License](LICENSE)
+
 # ZMM TODO
 
 ## Active
@@ -17,3 +20,7 @@
       sectioned with banner comments that map cleanly to modules. Deferred:
       high churn / regression risk for a release-hardening pass; do as a
       dedicated refactor with the full test suite as a safety net.
+
+---
+
+[README](README.md) · [Changelog](CHANGELOG.md) · [Back to top](#zmm-todo) · [License](LICENSE)

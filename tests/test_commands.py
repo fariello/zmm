@@ -521,3 +521,15 @@ def test_call_model_text_ignore_errors_returns_none(monkeypatch):
                               messages=zmm.chat_messages("s", "u"),
                               operation="clean", label="x")
     assert out is None
+
+
+# ----------------------------- P7-X1: actionable openai-missing error ----------------------------- #
+
+def test_client_for_missing_openai_actionable(monkeypatch):
+    monkeypatch.setattr(zmm, "openai", None)
+    cfg = zmm.Config(api_key="k")
+    with pytest.raises(SystemExit) as exc:
+        zmm.client_for(cfg)
+    msg = str(exc.value)
+    assert "openai" in msg
+    assert "pip install" in msg  # tells the user how to fix it

@@ -1125,7 +1125,11 @@ def _make_client(api_key: str, base_url: str | None):
 
 def client_for(cfg: Config):
     if openai is None:
-        raise SystemExit("ERROR: openai package is not installed; model-backed commands cannot run.")
+        raise SystemExit(
+            "ERROR: the 'openai' package is not installed; model-backed commands "
+            "(summarize, clean) cannot run.\n"
+            "  Install it with:  pip install 'zmm[api]'   (or: pip install openai)"
+        )
     if not cfg.api_key:
         raise SystemExit("ERROR: Missing API key. Configure [api] api_key or legacy api_key.")
     client = _make_client(cfg.api_key, cfg.base_url)

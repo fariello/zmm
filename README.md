@@ -1,3 +1,6 @@
+<!-- nav -->
+**README** · [Changelog](CHANGELOG.md) · [TODO](TODO.md) · [License](LICENSE)
+
 # zmm — Zoom Meeting Manager
 
 A CLI tool for managing Zoom meeting transcripts: inventory, merge, summarize, extract, report, and export.
@@ -20,6 +23,7 @@ A CLI tool for managing Zoom meeting transcripts: inventory, merge, summarize, e
 - [Resuming Interrupted Runs](#resuming-interrupted-runs)
 - [Summary Output Schema](#summary-output-schema)
 - [Data & Privacy](#data--privacy)
+- [Releasing](#releasing)
 - [License](#license)
 
 ## Features
@@ -373,6 +377,30 @@ them with `zmm clean diagnostics` when no longer needed.
 API keys are read from config or `~/.config/opencode/opencode.json` and are
 redacted from error output. They are never written to summaries or logs.
 
+## Releasing
+
+For maintainers cutting a release:
+
+```bash
+# 1. Bump the version in one place:
+#    zoom_meeting_manager.py -> __version__ = "X.Y.Z"
+#    (pyproject reads it dynamically; no second edit needed)
+# 2. Move CHANGELOG [Unreleased] into a dated [X.Y.Z] section.
+# 3. Run the full validation:
+python -m pytest tests/ -q
+# 4. Build and inspect artifacts (prompts/ and schemas/ must be present):
+python -m build
+python -m zipfile -l dist/zmm-*.whl
+# 5. Tag and push:
+git tag vX.Y.Z && git push --tags
+# 6. (optional) Upload to PyPI:
+#    python -m twine upload dist/*
+```
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+---
+
+[Back to top](#zmm--zoom-meeting-manager) · [Changelog](CHANGELOG.md) · [TODO](TODO.md) · [License](LICENSE)
