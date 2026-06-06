@@ -145,6 +145,7 @@ Every compound command also accepts `help` (e.g. `zmm list help`).
 | Command | Description |
 |---------|-------------|
 | `zmm list meetings` | List all discovered meetings |
+| `zmm list meetings --has raw\|merged\|cleaned\|summary\|summary-json\|json` | Only meetings that HAVE the given artifact (`json` = a `.summary.json` sidecar) |
 | `zmm list missing [merged\|summaries\|raw]` | Overview table of missing artifacts |
 | `zmm list missing-merged` / `-summaries` / `-summary-json` / `-raw` | Focused missing-item lists |
 | `zmm list models [--provider NAME] [--show-stale]` | List models per provider with pricing |

@@ -174,6 +174,21 @@ def test_filter_missing_summaries_includes_no_summary():
     assert zmm.filter_missing([rec], "summaries") == [rec]
 
 
+def test_filter_has_categories():
+    bare = _rec(raw=True)                                          # raw only
+    summarized = _rec(raw=True, merged=True, summary=True)         # summary, no json
+    full = _rec(raw=True, merged=True, summary=True, summary_json=True)
+    records = [bare, summarized, full]
+    assert zmm.filter_has(records, "raw") == records
+    assert zmm.filter_has(records, "merged") == [summarized, full]
+    assert zmm.filter_has(records, "summary") == [summarized, full]
+    assert zmm.filter_has(records, "summary-json") == [full]
+    assert zmm.filter_has(records, "json") == [full]              # alias
+    # No filter / unknown kind -> unchanged.
+    assert zmm.filter_has(records, None) == records
+    assert zmm.filter_has(records, "bogus") == records
+
+
 # ----------------------------- build_prompt assembly (P3-T9) ----------------------------- #
 
 class _A:

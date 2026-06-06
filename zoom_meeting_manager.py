@@ -1373,6 +1373,26 @@ def filter_missing(records: list[MeetingRecord], kind: str | None) -> list[Meeti
     return []
 
 
+def filter_has(records: list[MeetingRecord], kind: str | None) -> list[MeetingRecord]:
+    """Keep meetings that HAVE the given artifact (inverse of filter_missing).
+
+    'json' is an alias for 'summary-json' (a .summary.json sidecar).
+    """
+    if not kind:
+        return records
+    predicate = {
+        "raw": lambda r: r.has_raw,
+        "merged": lambda r: r.has_merged,
+        "cleaned": lambda r: r.has_cleaned,
+        "summary": lambda r: r.has_summary,
+        "summary-json": lambda r: r.has_summary_json,
+        "json": lambda r: r.has_summary_json,
+    }.get(kind)
+    if predicate is None:
+        return records
+    return [r for r in records if predicate(r)]
+
+
 OVERVIEW_HEADERS = ["Date", "Title", "Raw", "Mer-\nged", "Clean", "Sum-\nmary", "JSON"]
 
 
@@ -1559,10 +1579,16 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
         _print_count(args, len(shown), len(records), f"with missing {kind}")
         return
     if args.list_object == "meetings":
+        has_kind = getattr(args, "has_kind", None)
+        if has_kind:
+            records = filter_has(records, has_kind)
         shown = records[:limit]
+        label = "" if not has_kind else f"with {has_kind}"
+        empty = ("No meetings found. Check --input-dir / --output-dir."
+                 if not has_kind else f"No meetings with {has_kind} found.")
         render_table(OVERVIEW_HEADERS, rows_overview(shown, color), fmt=args.format, color=color,
-                     plain=args.plain, empty_notice="No meetings found. Check --input-dir / --output-dir.")
-        _print_count(args, len(shown), len(records), "")
+                     plain=args.plain, empty_notice=empty)
+        _print_count(args, len(shown), len(records), label)
         return
 
 
@@ -3336,10 +3362,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_models.add_argument("--show-stale", action="store_true",
                           help="Also show config-only models not returned by the live API (may be deprecated).")
     p_models.set_defaults(func=cmd_list, list_object="models")
-    for name in ("prompts", "meetings"):
-        sp = list_sub.add_parser(name)
-        add_common(sp)
-        sp.set_defaults(func=cmd_list, list_object=name)
+    p_prompts = list_sub.add_parser("prompts")
+    add_common(p_prompts)
+    p_prompts.set_defaults(func=cmd_list, list_object="prompts")
+    p_meetings = list_sub.add_parser("meetings")
+    add_common(p_meetings)
+    p_meetings.add_argument("--has", dest="has_kind", metavar="KIND",
+                            choices=("raw", "merged", "cleaned", "summary", "summary-json", "json"),
+                            help="Only meetings that HAVE the given artifact: raw, merged, "
+                                 "cleaned, summary, summary-json (a .summary.json sidecar; "
+                                 "'json' is an alias).")
+    p_meetings.set_defaults(func=cmd_list, list_object="meetings")
     p_missing = list_sub.add_parser("missing")
     add_common(p_missing)
     p_missing.add_argument("missing_kind", nargs="?",

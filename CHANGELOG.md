@@ -63,6 +63,13 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   invalid JSON, auth, not-found, rate-limit, timeout) instead of always saying
   "Check API key, endpoint, model name, network access."
 
+### Listing (post-tag)
+- `list meetings --has KIND` filters to meetings that HAVE a given artifact:
+  `raw`, `merged`, `cleaned`, `summary`, `summary-json`, or `json` (alias for
+  `summary-json`, i.e. a `.summary.json` sidecar). This is the positive inverse
+  of `list missing-*` — e.g. `zmm list meetings --has json` shows every meeting
+  that already has a structured summary sidecar.
+
 ### Reliability & progress (post-tag)
 - `summarize` and `clean` now send an output-token budget (`max_tokens`,
   default 16000) so long summaries are not silently truncated by a provider's
