@@ -1006,28 +1006,158 @@ def cmd_init(args: argparse.Namespace, cfg: Config) -> None:
         raise SystemExit(f"ERROR: Config exists: {target}. Use --clobber to overwrite.")
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    # Probe opencode.json for defaults
+    oc = _load_opencode_config()
+    oc_api_key = ""
+    oc_base_url = ""
+    oc_models: list[str] = []
+    oc_provider_name = ""
+    if oc:
+        providers = oc.get("provider") or {}
+        for pname, pinfo in providers.items():
+            opts = pinfo.get("options") or {}
+            key_raw = opts.get("apiKey", "")
+            resolved = _resolve_opencode_key(key_raw) if key_raw else None
+            if resolved:
+                oc_api_key = "(from opencode.json)"
+                oc_base_url = opts.get("baseURL", "")
+                oc_provider_name = pinfo.get("name") or pname
+                oc_models = sorted((pinfo.get("models") or {}).keys())
+                break
+
     # Defaults
     input_dir = ""
     output_dir = ""
-    base_url = ""
-    api_key = "{env:OPENAI_API_KEY}"
-    summary_model = "o4-mini"
+    base_url = oc_base_url
+    api_key = "{env:OPENAI_API_KEY}" if not oc_api_key else ""
+    summary_model = ""
     display_name = ""
     aliases = ""
 
     # Interactive wizard when stdin is a terminal
     if sys.stdin.isatty() and not getattr(args, "yes", False):
-        print("zmm config wizard\n")
-        input_dir = _ask("Raw Zoom meeting directory (input_dir)", input_dir)
-        output_dir = _ask("Output directory (output_dir)", output_dir)
-        base_url = _ask("API base URL (blank for OpenAI default)", base_url)
-        api_key = _ask("API key or env reference", api_key)
-        summary_model = _ask("Default summary model", summary_model)
-        display_name = _ask("Your display name (for extraction)", display_name)
-        aliases = _ask("Your name aliases (comma-separated)", aliases)
+        print("zmm config wizard")
+        print("=" * 40)
         print()
 
+        # Opencode.json detection
+        if oc:
+            print(f"  Detected: ~/.config/opencode/opencode.json")
+            print(f"  Provider: {oc_provider_name}")
+            print(f"  API key:  found")
+            if oc_base_url:
+                print(f"  Base URL: {oc_base_url}")
+            print(f"  Models:   {len(oc_models)} available")
+            print()
+            print("  zmm will use opencode.json for API access automatically.")
+            print("  You only need to set values here if you want to OVERRIDE it.")
+            print()
+        else:
+            print("  No ~/.config/opencode/opencode.json found.")
+            print("  You'll need to provide API credentials below.")
+            print()
+
+        # Input dir
+        print("─── Input Directory ───")
+        print("  Where Zoom stores raw meeting recordings.")
+        print("  Each meeting is a folder like: 2026-06-04 15.29.53 Meeting Title/")
+        print("  containing meeting_saved_closed_caption.txt and/or meeting_saved_chat.txt")
+        print()
+        input_dir = _ask("  input_dir", input_dir)
+        print()
+
+        # Output dir
+        print("─── Output Directory ───")
+        print("  Where zmm writes processed output. It will create subdirectories:")
+        print("    Merged-Transcripts-YYYY/   (merged caption+chat files)")
+        print("    Summaries-YYYY/            (LLM-generated summaries)")
+        print("    Cleaned-Transcripts-YYYY/  (LLM-cleaned transcripts)")
+        print()
+        output_dir = _ask("  output_dir", output_dir)
+        print()
+
+        # API settings
+        if oc:
+            print("─── API Settings (optional — opencode.json provides these) ───")
+            print("  Leave blank to use opencode.json. Only set if you want a different endpoint.")
+        else:
+            print("─── API Settings ───")
+            print("  zmm needs an OpenAI-compatible API endpoint for summarization.")
+            print("  You can use OpenAI directly, or a gateway like AWS Bedrock.")
+        print()
+        print("  base_url examples:")
+        print("    (blank)                          → OpenAI default")
+        print("    https://llmgw.its.uri.edu/v1     → custom gateway")
+        print("    https://api.openai.com/v1        → explicit OpenAI")
+        print()
+        base_url = _ask("  base_url", base_url)
+        print()
+
+        if not oc:
+            print("  api_key: Your API key, or use {env:VAR_NAME} to read from an")
+            print("  environment variable at runtime.")
+            print("    Examples: sk-abc123..., {env:OPENAI_API_KEY}, {env:MY_KEY}")
+            print()
+            api_key = _ask("  api_key", api_key)
+            print()
+        else:
+            api_key = ""
+
+        # Model
+        print("─── Summary Model ───")
+        print("  The LLM model used for meeting summarization.")
+        if oc_models:
+            print(f"  Available from {oc_provider_name} ({len(oc_models)} models):")
+            # Show a few representative models
+            shown = oc_models[:8]
+            for m in shown:
+                print(f"    {m}")
+            if len(oc_models) > 8:
+                print(f"    ... and {len(oc_models) - 8} more (run: zmm list models)")
+            print()
+            print("  Leave blank to let zmm pick from opencode.json automatically.")
+        else:
+            print("  Examples: gpt-4o, o4-mini, its_direct/pt2-qwen3-coder-next-us")
+        print()
+        summary_model = _ask("  summary_model", summary_model)
+        print()
+
+        # Person
+        print("─── Person Profile (for extraction) ───")
+        print("  zmm can extract action items and statements mentioning you.")
+        print("  Your display name and aliases help it find relevant content.")
+        print()
+        print("  display_name: Your full name as it might appear in notes.")
+        print("    Example: Gabriel Fariello")
+        print()
+        display_name = _ask("  display_name", display_name)
+        print()
+        print("  aliases: Other names/spellings that refer to you in transcripts.")
+        print("  Zoom often misspells names. Include common variants.")
+        print("    Example: Gabriel, Gabriele, Gabe, G. Fariello")
+        print()
+        aliases = _ask("  aliases", aliases)
+        print()
+
+    # Build config text — omit API section if opencode.json provides it and user didn't override
+    api_section = ""
+    if api_key or (base_url and base_url != oc_base_url) or not oc:
+        api_section = f"""
+[api]
+# Leave blank if using ~/.config/opencode/opencode.json for API access.
+base_url = {base_url}
+api_key = {api_key}
+no_temperature = false
+"""
+
+    model_comment = ""
+    if oc and not summary_model:
+        model_comment = "# Leave blank to auto-select from opencode.json.\n"
+
     text = f"""# zoom_meeting_manager.cfg
+#
+# zmm configuration. Values here override ~/.config/opencode/opencode.json.
+# Fields left blank fall through to opencode.json if available.
 
 [paths]
 input_dir = {input_dir}
@@ -1035,14 +1165,9 @@ output_dir = {output_dir}
 
 [source]
 type = zoom
-
-[api]
-base_url = {base_url}
-api_key = {api_key}
-no_temperature = false
-
+{api_section}
 [models]
-summary = {summary_model}
+{model_comment}summary = {summary_model}
 cleanup =
 extraction =
 prioritization =
