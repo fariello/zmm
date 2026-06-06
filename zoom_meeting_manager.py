@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - command modes without API do not need it
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = SCRIPT_DIR / "prompts"
+USER_PROMPTS_DIR = Path.home() / ".config" / "zmm" / "prompts"
 LEGACY_CONFIG = "summarize_zoom_transcripts.cfg"
 CONFIG_NAME = "zoom_meeting_manager.cfg"
 
@@ -706,12 +707,34 @@ def compute_problems(rec: MeetingRecord) -> list[str]:
 # ----------------------------- Prompt/Model ----------------------------- #
 
 
-def load_prompt(name: str) -> str:
+def prompt_search_dirs() -> list[Path]:
+    """Return prompt directories in priority order: user > bundled."""
+    dirs = []
+    if USER_PROMPTS_DIR.is_dir():
+        dirs.append(USER_PROMPTS_DIR)
+    dirs.append(PROMPTS_DIR)
+    return dirs
+
+
+def resolve_prompt_path(name: str) -> Path | None:
+    """Find a prompt file by name, searching user dir first then bundled."""
+    # Absolute or relative path given directly
     path = Path(name).expanduser()
-    if not path.is_file():
-        path = PROMPTS_DIR / f"{name}.txt"
-    if not path.is_file():
-        raise SystemExit(f"ERROR: Prompt layer not found: {name}")
+    if path.is_file():
+        return path
+    # Search prompt directories in priority order
+    for d in prompt_search_dirs():
+        candidate = d / f"{name}.txt"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_prompt(name: str) -> str:
+    path = resolve_prompt_path(name)
+    if not path:
+        searched = ", ".join(str(d) for d in prompt_search_dirs())
+        raise SystemExit(f"ERROR: Prompt layer not found: {name}\n  Searched: {searched}")
     return path.read_text(encoding="utf-8").strip()
 
 
@@ -832,8 +855,16 @@ def rows_overview(records: list[MeetingRecord], color: bool) -> list[list[Any]]:
 def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     color = supports_color(args.color or cfg.color)
     if args.list_object == "prompts":
-        rows = [[str(p.relative_to(PROMPTS_DIR).with_suffix(""))] for p in sorted(PROMPTS_DIR.rglob("*.txt"))]
-        render_table(["Prompt"], rows, fmt=args.format, color=color, plain=args.plain)
+        seen: dict[str, str] = {}  # name -> source
+        for d in prompt_search_dirs():
+            label = "user" if d == USER_PROMPTS_DIR else "bundled"
+            for p in sorted(d.rglob("*.txt")):
+                name = str(p.relative_to(d).with_suffix(""))
+                if name not in seen:
+                    seen[name] = label
+                # If user overrides bundled, first one wins (already in seen)
+        rows = [[name, source] for name, source in sorted(seen.items())]
+        render_table(["Prompt", "Source"], rows, fmt=args.format, color=color, plain=args.plain)
         return
     if args.list_object == "models":
         cfg_api = load_config(args.config, require_api=True)
@@ -981,6 +1012,86 @@ include_all_model_summaries = true
     target.write_text(text, encoding="utf-8")
     print(f"Wrote {target}")
     print("Next: edit paths/API settings, then run `zmm index --rebuild` and `zmm list missing`.")
+
+
+def cmd_show(args: argparse.Namespace, cfg: Config) -> None:
+    """Show active configuration: config files, prompt directories, models, API endpoint."""
+    lines: list[str] = []
+
+    # Config file
+    lines.append("Config file:")
+    if cfg.config_path:
+        lines.append(f"  {cfg.config_path}")
+    else:
+        lines.append("  (none found — using opencode.json fallback)")
+
+    # Opencode.json
+    lines.append("")
+    lines.append("Opencode config:")
+    if OPENCODE_CONFIG.is_file():
+        lines.append(f"  {OPENCODE_CONFIG} (found)")
+    else:
+        lines.append(f"  {OPENCODE_CONFIG} (not found)")
+
+    # Prompt search path
+    lines.append("")
+    lines.append("Prompt search path (first match wins):")
+    for d in prompt_search_dirs():
+        count = len(list(d.rglob("*.txt"))) if d.is_dir() else 0
+        lines.append(f"  {d}  ({count} prompts)")
+
+    # Active prompt layers
+    lines.append("")
+    lines.append("Active prompt layers (for summarize):")
+    layers = cfg.prompt_layers + cfg.prompt_contexts + cfg.prompt_people + cfg.prompt_corrections
+    if not layers and cfg.prompts.get("summary"):
+        layers = [cfg.prompts["summary"]]
+    if not layers:
+        layers = ["meeting_generic", "output_structured_notes"]
+    for layer in layers:
+        path = resolve_prompt_path(layer)
+        source = "(not found)"
+        if path:
+            if USER_PROMPTS_DIR in path.parents or path == USER_PROMPTS_DIR:
+                source = "user"
+            elif PROMPTS_DIR in path.parents or path == PROMPTS_DIR:
+                source = "bundled"
+            else:
+                source = str(path)
+        lines.append(f"  {layer}  [{source}]")
+
+    # API
+    lines.append("")
+    lines.append("API:")
+    lines.append(f"  base_url: {cfg.base_url or '(default OpenAI endpoint)'}")
+    lines.append(f"  api_key:  {'configured' if cfg.api_key else 'NOT SET'}")
+
+    # Models
+    lines.append("")
+    lines.append("Models:")
+    for task in ("summary", "cleanup", "extraction", "prioritization", "validation"):
+        model = cfg.models.get(task)
+        lines.append(f"  {task}: {model or '(not set)'}")
+
+    # Paths
+    lines.append("")
+    lines.append("Paths:")
+    lines.append(f"  input_dir:  {cfg.input_dir or '(not set)'}")
+    lines.append(f"  output_dir: {cfg.output_dir or '(not set)'}")
+
+    # Person
+    lines.append("")
+    lines.append("Person profile:")
+    if cfg.default_person and cfg.people.get(cfg.default_person):
+        person = cfg.people[cfg.default_person]
+        lines.append(f"  default_person: {cfg.default_person}")
+        lines.append(f"  display_name:   {person.get('display_name', '(not set)')}")
+        aliases = person.get("aliases", [])
+        lines.append(f"  aliases:        {', '.join(aliases) if aliases else '(not set)'}")
+    else:
+        lines.append(f"  default_person: {cfg.default_person or '(not set)'}")
+
+    print("\n".join(lines))
 
 
 def _load_model_costs() -> dict[str, dict[str, float]]:
@@ -1462,6 +1573,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_cfg.add_argument("--output")
     p_init_cfg.add_argument("--clobber", action="store_true")
     p_init_cfg.set_defaults(func=cmd_init)
+
+    p_show = sub.add_parser("show")
+    add_common(p_show)
+    show_sub = p_show.add_subparsers(dest="show_object", required=True)
+    p_show_cfg = show_sub.add_parser("config")
+    add_common(p_show_cfg)
+    p_show_cfg.set_defaults(func=cmd_show)
 
     p_est = sub.add_parser("estimate")
     add_common(p_est)
