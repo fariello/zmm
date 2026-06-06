@@ -6,6 +6,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Usability & features (Part-5 audit)
+- New `zmm merge raw` command: merge raw caption+chat into transcripts locally
+  without calling a model (previously only reachable via paid `summarize raw`).
+- `summarize` and `clean` now print `[i/N]` progress before each model call so
+  long batches no longer appear hung.
+- List/report/extract commands now print a friendly "No meetings found"-style
+  notice on empty results (table mode); json/csv output is unchanged.
+- `discover_inventory` warns when `--input-dir` is set but does not exist
+  (common cause of silently-empty results).
+- Top-level `zmm --help` now shows a one-line description for every command.
+- Added a `[dev]` extra (openai, pytest, pytest-cov) and documented
+  `pip install -e .[api]` / `.[dev]` in the README.
+
 ### Documentation (Part-4 audit)
 - README rewritten: added Contents/TOC, Input Layout and Output Layout
   sections, config precedence + opencode.json fallback, a Person Profiles and

@@ -289,7 +289,8 @@ def _truncate_titles(headers: list[str], rows: list[list[Any]], max_title: int =
     return result
 
 
-def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: bool, plain: bool = False) -> None:
+def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: bool,
+                 plain: bool = False, empty_notice: str | None = None) -> None:
     if fmt == "json":
         print(json.dumps([dict(zip(headers, row)) for row in rows], indent=2, ensure_ascii=False))
         return
@@ -297,6 +298,12 @@ def render_table(headers: list[str], rows: list[list[Any]], *, fmt: str, color: 
         writer = csv.writer(sys.stdout)
         writer.writerow(headers)
         writer.writerows(rows)
+        return
+
+    # In human (table) mode, show a friendly notice instead of a bare header
+    # when there are no rows.
+    if not rows and empty_notice:
+        print(empty_notice)
         return
 
     # Truncate long titles for table display
@@ -796,6 +803,11 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
     records: dict[str, MeetingRecord] = {}
     match_lower = match.lower() if match else None
     prog = _Progress()
+
+    # Warn if an input_dir was given but is unusable (typo'd path is a common
+    # reason raw meetings silently fail to appear).
+    if input_dir and not Path(input_dir).is_dir():
+        print(f"WARNING: --input-dir does not exist or is not a directory: {input_dir}", file=sys.stderr)
 
     if input_dir and Path(input_dir).is_dir():
         prog.phase("raw meetings")
@@ -1330,10 +1342,12 @@ def cmd_list(args: argparse.Namespace, cfg: Config) -> None:
     if args.list_object == "missing":
         kind = args.missing_kind or "all"
         records = filter_missing(records, kind)
-        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color,
+                     plain=args.plain, empty_notice=f"No meetings with missing {kind} found.")
         return
     if args.list_object == "meetings":
-        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records[:limit], color), fmt=args.format, color=color,
+                     plain=args.plain, empty_notice="No meetings found. Check --input-dir / --output-dir.")
         return
 
 
@@ -1341,7 +1355,8 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> None:
     records = get_records(args, cfg)
     color = supports_color(args.color or cfg.color)
     if args.report_object == "status":
-        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color, plain=args.plain)
+        render_table(OVERVIEW_HEADERS, rows_overview(records, color), fmt=args.format, color=color,
+                     plain=args.plain, empty_notice="No meetings found. Check --input-dir / --output-dir.")
         return
     groups: dict[str, list[MeetingRecord]] = {}
     for r in records:
@@ -1358,7 +1373,8 @@ def cmd_report(args: argparse.Namespace, cfg: Config) -> None:
     for key in sorted(groups):
         vals = groups[key]
         rows.append([key, len(vals), sum(r.has_raw for r in vals), sum(r.has_merged for r in vals), sum(r.has_cleaned for r in vals), sum(r.has_summary for r in vals), sum(bool(r.problems) for r in vals)])
-    render_table(["Period", "Meetings", "Raw", "Mer-\nged", "Clean", "Sum-\nmary", "Issues"], rows, fmt=args.format, color=color, plain=args.plain)
+    render_table(["Period", "Meetings", "Raw", "Mer-\nged", "Clean", "Sum-\nmary", "Issues"], rows, fmt=args.format, color=color,
+                 plain=args.plain, empty_notice="No meetings found. Check --input-dir / --output-dir.")
 
 
 def cmd_index(args: argparse.Namespace, cfg: Config) -> None:
@@ -2142,7 +2158,9 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
     resume_done = load_resume_done(output, "clean") if getattr(args, "resume", False) else set()
     journal = None if args.dry_run else RunJournal(output, "clean")
     n_done = n_skipped = n_failed = 0
-    for rec in records[: args.max or None]:
+    selected = records[: args.max or None]
+    total = len(selected)
+    for idx, rec in enumerate(selected, start=1):
         if not rec.merged_path or not Path(rec.merged_path).is_file():
             n_skipped += 1
             continue
@@ -2162,6 +2180,7 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> None:
             print(f"Would clean {rec.merged_path} with {model} -> {out_path}")
             continue
         text = Path(rec.merged_path).read_text(encoding="utf-8", errors="replace")
+        print(f"[{idx}/{total}] Cleaning {rec.title} with {model}...", flush=True)
         try:
             response = client.chat.completions.create(model=model, messages=chat_messages(prompt, text))
             cleaned = response.choices[0].message.content or ""
@@ -2239,9 +2258,10 @@ def cmd_clean_diagnostics(args: argparse.Namespace, cfg: Config) -> None:
     print(f"\nDeleted {deleted} diagnostic file(s).")
 
 
-def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
+def merge_raw_records(args: argparse.Namespace, cfg: Config) -> tuple[list[MeetingRecord], int]:
     records = get_records(args, cfg)
     changed = False
+    n_merged = 0
     for rec in records:
         if not rec.has_raw or rec.has_merged:
             continue
@@ -2270,8 +2290,25 @@ def merge_raw_records(args: argparse.Namespace, cfg: Config) -> list[MeetingReco
         atomic_write_text(out_path, merged)
         rec.merged_path = str(out_path)
         changed = True
+        n_merged += 1
         print(f"Wrote {out_path}")
-    return get_records(args, cfg) if changed else records
+    return (get_records(args, cfg), n_merged) if changed else (records, n_merged)
+
+
+def cmd_merge(args: argparse.Namespace, cfg: Config) -> None:
+    """Merge raw caption+chat into canonical merged transcripts (local, no model)."""
+    records = get_records(args, cfg)
+    eligible = [r for r in records if r.has_raw and not r.has_merged and r.raw_dir]
+    if not eligible:
+        print("No raw meetings to merge (all already merged, or none found).")
+        if not (args.input_dir or cfg.input_dir):
+            print("  Note: --input-dir is not set, so no raw meetings were discovered.", file=sys.stderr)
+        return
+    _, n_merged = merge_raw_records(args, cfg)
+    if args.dry_run:
+        print(f"\nDry run: would merge {len(eligible)} raw meeting(s).")
+    else:
+        print(f"\nMerged {n_merged} raw meeting(s).")
 
 
 # Built-in keyword sets used to bias person extraction by kind.
@@ -2337,7 +2374,9 @@ def cmd_extract(args: argparse.Namespace, cfg: Config) -> None:
                 if kind_regex is not None and not kind_regex.search(line):
                     continue
                 rows.append([r.meeting_date or "", r.title, Path(source).name, idx, line[:180]])
-    render_table(["Date", "Title", "Source", "Line", "Text"], rows, fmt=args.format, color=supports_color(args.color or cfg.color), plain=args.plain)
+    render_table(["Date", "Title", "Source", "Line", "Text"], rows, fmt=args.format,
+                 color=supports_color(args.color or cfg.color), plain=args.plain,
+                 empty_notice="No matches found.")
 
 
 def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace, cfg: Config) -> list[MeetingRecord]:
@@ -2383,7 +2422,10 @@ def _auto_clean_if_needed(records: list[MeetingRecord], args: argparse.Namespace
 
 
 def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
-    records = merge_raw_records(args, cfg) if args.summarize_object == "raw" else get_records(args, cfg)
+    if args.summarize_object == "raw":
+        records, _ = merge_raw_records(args, cfg)
+    else:
+        records = get_records(args, cfg)
     if args.summarize_object == "files":
         records = records_from_files(args.files)
     # Apply --max up front so merge/auto-clean/summarize all operate on the
@@ -2407,7 +2449,8 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
     resume_done = load_resume_done(output, "summarize") if getattr(args, "resume", False) else set()
     journal = None if args.dry_run else RunJournal(output, "summarize")
     n_done = n_skipped = n_failed = 0
-    for rec in records:
+    total = len(records)
+    for idx, rec in enumerate(records, start=1):
         source = choose_summary_source(rec, cfg, args)
         if not source:
             n_skipped += 1
@@ -2429,6 +2472,7 @@ def cmd_summarize(args: argparse.Namespace, cfg: Config) -> None:
         is_cleaned = any(source == cp for cp in rec.cleaned_paths)
         prompt, prompt_label = build_prompt(cfg, args, "summary", skip_corrections=is_cleaned)
         text = Path(source).read_text(encoding="utf-8", errors="replace")
+        print(f"[{idx}/{total}] Summarizing {rec.title} with {model}...", flush=True)
         data = call_model_json(cfg, args, model=model, operation="summarize", label=source, messages=chat_messages(prompt, text))
         if not data:
             n_failed += 1
@@ -2857,7 +2901,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(sub, parser)
 
-    p_list = sub.add_parser("list")
+    p_list = sub.add_parser("list", help="List meetings, missing items, models, or prompts")
     list_sub = p_list.add_subparsers(dest="list_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(list_sub, p_list)
     p_models = list_sub.add_parser("models")
@@ -2885,7 +2929,7 @@ def build_parser() -> argparse.ArgumentParser:
         add_common(sp)
         sp.set_defaults(func=cmd_list, list_object="missing", missing_kind=mk)
 
-    p_report = sub.add_parser("report")
+    p_report = sub.add_parser("report", help="Per-meeting status or aggregate counts")
     report_sub = p_report.add_subparsers(dest="report_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(report_sub, p_report)
     p_status = report_sub.add_parser("status")
@@ -2896,26 +2940,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_counts.add_argument("--by", choices=("year", "month", "both"), default="both")
     p_counts.set_defaults(func=cmd_report, report_object="counts")
 
-    p_index = sub.add_parser("index")
+    p_index = sub.add_parser("index", help="Write inventory metadata (Processing JSON)")
     add_common(p_index)
     p_index.add_argument("--rebuild", action="store_true")
     p_index.set_defaults(func=cmd_index)
 
-    p_migrate = sub.add_parser("migrate")
+    p_migrate = sub.add_parser("migrate", help="Import/index pre-existing on-disk output")
     migrate_sub = p_migrate.add_subparsers(dest="migrate_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(migrate_sub, p_migrate)
     p_legacy = migrate_sub.add_parser("legacy")
     add_common(p_legacy)
     p_legacy.set_defaults(func=cmd_migrate)
 
-    p_write = sub.add_parser("write")
+    p_write = sub.add_parser("write", help="Write inventory metadata explicitly")
     write_sub = p_write.add_subparsers(dest="write_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(write_sub, p_write)
     p_write_json = write_sub.add_parser("processing-json")
     add_common(p_write_json)
     p_write_json.set_defaults(func=cmd_write_json)
 
-    p_export = sub.add_parser("export")
+    p_export = sub.add_parser("export", help="Write aggregate rollup files")
     export_sub = p_export.add_subparsers(dest="export_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(export_sub, p_export)
     p_agg = export_sub.add_parser("aggregates")
@@ -2924,7 +2968,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Grouping period for aggregates (default: from config, or 'auto').")
     p_agg.set_defaults(func=cmd_export)
 
-    p_init = sub.add_parser("init")
+    p_init = sub.add_parser("init", help="Generate a starter config file (wizard)")
     init_sub = p_init.add_subparsers(dest="init_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(init_sub, p_init)
     p_init_cfg = init_sub.add_parser("config")
@@ -2932,7 +2976,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_cfg.add_argument("--clobber", action="store_true")
     p_init_cfg.set_defaults(func=cmd_init)
 
-    p_show = sub.add_parser("show")
+    p_show = sub.add_parser("show", help="Show active config or the full model prompt")
     show_sub = p_show.add_subparsers(dest="show_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(show_sub, p_show)
     p_show_cfg = show_sub.add_parser("config")
@@ -2944,7 +2988,7 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Which task's prompt to show (default: summary).")
     p_show_prompt.set_defaults(func=cmd_show_prompt)
 
-    p_est = sub.add_parser("estimate")
+    p_est = sub.add_parser("estimate", help="Estimate tokens and cost before model calls")
     est_sub = p_est.add_subparsers(dest="estimate_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(est_sub, p_est)
     for name in ("summarize", "clean", "extract"):
@@ -2953,7 +2997,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--person")
         sp.set_defaults(func=cmd_estimate, estimate_object=name)
 
-    p_extract = sub.add_parser("extract")
+    p_extract = sub.add_parser("extract", help="Regex/person search across transcripts (local)")
     ext_sub = p_extract.add_subparsers(dest="extract_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(ext_sub, p_extract)
     p_search = ext_sub.add_parser("search")
@@ -2970,7 +3014,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_person.add_argument("--person", required=True)
     p_person.set_defaults(func=cmd_extract, extract_object="person")
 
-    p_sum = sub.add_parser("summarize")
+    p_sum = sub.add_parser("summarize", help="Summarize transcripts with an LLM")
     sum_sub = p_sum.add_subparsers(dest="summarize_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(sum_sub, p_sum)
     for name in ("raw", "merged"):
@@ -2986,7 +3030,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_files.add_argument("files", nargs="+")
     p_files.set_defaults(func=cmd_summarize, summarize_object="files")
 
-    p_fix = sub.add_parser("fix")
+    p_merge = sub.add_parser("merge", help="Merge raw caption+chat into transcripts (local)")
+    merge_sub = p_merge.add_subparsers(dest="merge_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(merge_sub, p_merge)
+    p_merge_raw = merge_sub.add_parser("raw")
+    add_common(p_merge_raw)
+    p_merge_raw.set_defaults(func=cmd_merge)
+
+    p_fix = sub.add_parser("fix", help="Fill gaps, e.g. fix missing summaries")
     fix_sub = p_fix.add_subparsers(dest="fix_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(fix_sub, p_fix)
     p_fix_missing = fix_sub.add_parser("missing")
@@ -2997,7 +3048,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_options(p_fix_sum)
     p_fix_sum.set_defaults(func=cmd_summarize, summarize_object="merged")
 
-    p_clean = sub.add_parser("clean")
+    p_clean = sub.add_parser("clean", help="LLM-clean transcripts or remove diagnostics")
     clean_sub = p_clean.add_subparsers(dest="clean_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(clean_sub, p_clean)
     p_clean_transcripts = clean_sub.add_parser("transcripts")
@@ -3011,7 +3062,7 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Only delete diagnostics older than DAYS days.")
     p_clean_diag.set_defaults(func=cmd_clean_diagnostics)
 
-    p_delete = sub.add_parser("delete")
+    p_delete = sub.add_parser("delete", help="Move processed raw dirs to to-delete/")
     delete_sub = p_delete.add_subparsers(dest="delete_object", required=True, parser_class=_SubcommandParser)
     _add_help_subcommand(delete_sub, p_delete)
     p_delete_raw = delete_sub.add_parser("raw")

@@ -356,3 +356,95 @@ def test_rows_overview_marks(tmp_path):
     assert len(rows) == 1
     assert rows[0][0] == "2026-01-15"
     assert rows[0][1] == "T"
+
+
+# ----------------------------- P5: merge command ----------------------------- #
+
+def test_cmd_merge_creates_merged(tmp_path):
+    input_dir, output_dir = make_meeting_tree(tmp_path, with_raw=True, with_merged=False)
+    cfg = zmm.Config(input_dir=str(input_dir), output_dir=str(output_dir))
+    args = _ns(input_dir=str(input_dir), output_dir=str(output_dir))
+    zmm.cmd_merge(args, cfg)
+    merged = list((output_dir / "Merged-Transcripts-2026").glob("*.txt"))
+    assert len(merged) == 1
+
+
+def test_cmd_merge_no_model_call(tmp_path, fake_client):
+    input_dir, output_dir = make_meeting_tree(tmp_path, with_raw=True, with_merged=False)
+    client = fake_client("should not be called")
+    cfg = zmm.Config(input_dir=str(input_dir), output_dir=str(output_dir))
+    args = _ns(input_dir=str(input_dir), output_dir=str(output_dir))
+    zmm.cmd_merge(args, cfg)
+    assert client.calls == []  # merge is local-only
+
+
+def test_cmd_merge_nothing_to_do(tmp_path, capsys):
+    input_dir, output_dir = make_meeting_tree(tmp_path, with_raw=True, with_merged=True)
+    cfg = zmm.Config(input_dir=str(input_dir), output_dir=str(output_dir))
+    args = _ns(input_dir=str(input_dir), output_dir=str(output_dir))
+    zmm.cmd_merge(args, cfg)
+    out = capsys.readouterr().out
+    assert "No raw meetings to merge" in out
+
+
+def test_cmd_merge_dry_run(tmp_path):
+    input_dir, output_dir = make_meeting_tree(tmp_path, with_raw=True, with_merged=False)
+    cfg = zmm.Config(input_dir=str(input_dir), output_dir=str(output_dir))
+    args = _ns(input_dir=str(input_dir), output_dir=str(output_dir), dry_run=True)
+    zmm.cmd_merge(args, cfg)
+    assert not (output_dir / "Merged-Transcripts-2026").exists()
+
+
+# ----------------------------- P5: empty-result notices ----------------------------- #
+
+def test_list_meetings_empty_notice(tmp_path, capsys):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), list_object="meetings")
+    zmm.cmd_list(args, cfg)
+    out = capsys.readouterr().out
+    assert "No meetings found" in out
+
+
+def test_list_meetings_empty_json_still_valid(tmp_path, capsys):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), list_object="meetings", format="json")
+    zmm.cmd_list(args, cfg)
+    out = capsys.readouterr().out
+    assert out.strip() == "[]"  # machine format unaffected
+
+
+def test_report_status_empty_notice(tmp_path, capsys):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    cfg = zmm.Config(output_dir=str(output_dir))
+    args = _ns(output_dir=str(output_dir), report_object="status")
+    zmm.cmd_report(args, cfg)
+    out = capsys.readouterr().out
+    assert "No meetings found" in out
+
+
+# ----------------------------- P5: input-dir warning ----------------------------- #
+
+def test_discover_inventory_warns_bad_input_dir(tmp_path, capsys):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    zmm.discover_inventory("/no/such/input/dir", str(output_dir))
+    err = capsys.readouterr().err
+    assert "does not exist" in err
+
+
+# ----------------------------- P5: progress output ----------------------------- #
+
+def test_summarize_shows_progress(tmp_path, fake_client, capsys):
+    import json as _json
+    _, output_dir = make_meeting_tree(tmp_path, with_raw=False, with_merged=True)
+    fake_client(_json.dumps(VALID_MODEL_OUTPUT))
+    cfg = _summary_cfg(output_dir)
+    args = _ns(output_dir=str(output_dir), summarize_object="merged", summarization_source="merged")
+    zmm.cmd_summarize(args, cfg)
+    out = capsys.readouterr().out
+    assert "[1/1] Summarizing" in out

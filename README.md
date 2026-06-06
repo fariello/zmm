@@ -50,7 +50,9 @@ self-hosted gateways and proxies that expose that protocol.
 ```bash
 git clone https://github.com/fariello/zmm.git
 cd zmm
-pip install -e .           # installs the `zmm` command + dependencies
+pip install -e .           # core install (adds the `zmm` command)
+pip install -e .[api]      # + OpenAI client for summarize/clean
+pip install -e .[dev]      # + openai, pytest, pytest-cov for contributors
 # or run directly without installing:
 ./zmm --help
 ```
@@ -152,6 +154,12 @@ Every compound command also accepts `help` (e.g. `zmm list help`).
 |---------|-------------|
 | `zmm show config` | Show active configuration and sources |
 | `zmm show prompt [--task summary\|cleanup]` | Show the full model directive with source annotations |
+
+### Transcript preparation
+
+| Command | Description |
+|---------|-------------|
+| `zmm merge raw` | Merge raw caption+chat into transcripts (local, no model) |
 
 ### Model-backed operations
 
