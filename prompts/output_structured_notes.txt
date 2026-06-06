@@ -1,43 +1,56 @@
-Output format:
+Return your response as strict JSON matching this exact structure. Do not include markdown formatting, code fences, or any text outside the JSON object.
 
-1. General Meeting Information
-Meeting Title: <TITLE (if inferred, so state) or UNKNOWN>
-Date & Time: <DATETIME in YYYY-MM-DD HH:MM:SS format or UNKNOWN>
-Approx. Duration: <DURATION in HH:MM:SS format or UNKNOWN>
+{
+  "improved_title": "Clear descriptive title, max 80 chars. Convey the meeting's primary purpose better than the calendar title.",
+  "one_liner": "Single sentence, max 200 chars. What was this meeting about? Useful for quick scanning.",
+  "high_level_summary": "2-4 sentences covering purpose, major topics, decisions, and outcomes.",
+  "key_takeaways": [
+    "3-7 bullet points: the most important things someone should know with 10 seconds to read."
+  ],
+  "decisions": [
+    {
+      "decision": "What was decided",
+      "status": "final or tentative",
+      "owner": "person or null",
+      "confidence": "high, medium, or low"
+    }
+  ],
+  "action_items": [
+    {
+      "task": "Task description",
+      "owner": "person or null",
+      "requested_by": "person or null",
+      "deadline": "YYYY-MM-DD, descriptive, or null",
+      "priority": "high, medium, low, or null",
+      "confidence": "high, medium, or low"
+    }
+  ],
+  "open_questions": ["Unresolved issues, pending decisions, items needing follow-up"],
+  "key_topics": ["Main topics, systems, projects, themes discussed"],
+  "attendees": {
+    "present": ["People clearly present (spoke or addressed)"],
+    "mentioned": ["People mentioned but not clearly present"],
+    "uncertain": ["People whose presence is ambiguous"]
+  },
+  "detailed_notes": [
+    {
+      "topic": "Topic heading",
+      "notes": "Discussion points, technical details, rationale, dependencies, blockers, concerns."
+    }
+  ],
+  "llm_notes": {
+    "assumptions": ["Assumptions made while summarizing"],
+    "uncertain_corrections": ["Transcript corrections that are plausible but uncertain"],
+    "uncertain_attribution": ["Speaker attributions that are uncertain"]
+  }
+}
 
-2. High-Level Summary
-Provide a concise 2-4 sentence summary of the meeting's main purpose, major topics, important decisions, and overall outcomes.
-
-3. Key Decisions
-List the main decisions first.
-For each item, include:
-- Decision: <decision>
-- Status: <Final or Tentative>
-- Owner: <person or Owner unclear>
-- Confidence: <high|medium|low>
-- Brief context only if needed
-
-4. Action Items / To-Do List
-List each clear action item separately using this exact format:
-- Task: <task description>
-  Owner: <responsible person or Owner unclear>
-  Requested by: <person or Unknown>
-  Deadline: <deadline or None stated>
-  Confidence: <high|medium|low>
-
-5. Open Questions / Follow-Up Items
-List unresolved issues, pending decisions, unclear ownership, and items requiring further clarification or follow-up.
-
-6. Attendees
-- Present: <attendee list or Not clearly stated>
-- Mentioned: <mentioned people or None clearly mentioned>
-If attendance is uncertain due to transcript limitations, state that briefly.
-
-7. Key Topics Discussed
-List the main topics, systems, projects, or themes discussed. Preserve useful specificity for later retrieval.
-
-8. Detailed Notes
-Organize by topic. Include major discussion points, technical details, rationale for decisions when relevant, dependencies, blockers, concerns, and anything important for future reference.
-
-9. LLM Notes: Assumptions / Ambiguities
-List uncertain transcript corrections, unclear names or terms, uncertain speaker attribution, uncertain ownership, uncertain attendance, uncertain dates or deadlines, and places where the transcript may support more than one interpretation.
+Rules for each field:
+- improved_title: Max 80 characters. Make it descriptive and specific. Not just the calendar name.
+- one_liner: Max 200 characters. One complete sentence. Should be useful in a list of meetings.
+- key_takeaways: 3-7 items. Include decisions, critical actions, deadlines, blockers. Most important first.
+- decisions: Only items the transcript clearly supports as decided. Use "tentative" for likely-but-unconfirmed.
+- action_items: Only items someone clearly accepted or was assigned. Use null for unknown fields.
+- attendees.present: Only people who clearly spoke or were directly addressed.
+- detailed_notes: Organize by topic. Preserve important context not captured in structured fields.
+- llm_notes: Be transparent about uncertainty. This helps the user know what to verify.
