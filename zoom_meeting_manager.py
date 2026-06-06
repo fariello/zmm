@@ -1490,6 +1490,38 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-input-tokens", type=int)
 
 
+class _SubcommandParser(argparse.ArgumentParser):
+    """ArgumentParser subclass with friendlier error messages for subcommands."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        if "required" in message and ("argument" in message or "the following" in message):
+            # Missing subcommand
+            prog = self.prog
+            sys.stderr.write(f"Try: {prog} help\n")
+            raise SystemExit(2)
+        if "invalid choice" in message:
+            # Unknown subcommand — check if it's "help"
+            # (handled below via _add_help_subcommand, but just in case)
+            prog = self.prog
+            sys.stderr.write(f"{prog}: {message}\n")
+            sys.stderr.write(f"Try: {prog} help\n")
+            raise SystemExit(2)
+        super().error(message)
+
+
+def _add_help_subcommand(sub_action: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> None:
+    """Register 'help' as a subcommand that prints the parent's help."""
+
+    class _HelpAction(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            parent.print_help()
+            raise SystemExit(0)
+
+    help_parser = sub_action.add_parser("help", add_help=False)
+    help_parser.add_argument("_help", nargs="?", action=_HelpAction, default=None)
+    help_parser.set_defaults(func=lambda *_: (parent.print_help(), sys.exit(0)))
+
+
 def add_model_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", nargs="+")
     parser.add_argument("--summary-model")
@@ -1503,14 +1535,16 @@ def add_model_options(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="zmm", description="Manage Zoom meeting transcripts, summaries, reports, and extraction.")
+    parser = _SubcommandParser(prog="zmm", description="Manage Zoom meeting transcripts, summaries, reports, and extraction.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     add_common(parser)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(sub, parser)
 
     p_list = sub.add_parser("list")
     add_common(p_list)
-    list_sub = p_list.add_subparsers(dest="list_object", required=True)
+    list_sub = p_list.add_subparsers(dest="list_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(list_sub, p_list)
     for name in ("models", "prompts", "meetings"):
         sp = list_sub.add_parser(name)
         add_common(sp)
@@ -1531,7 +1565,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_report = sub.add_parser("report")
     add_common(p_report)
-    report_sub = p_report.add_subparsers(dest="report_object", required=True)
+    report_sub = p_report.add_subparsers(dest="report_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(report_sub, p_report)
     p_status = report_sub.add_parser("status")
     add_common(p_status)
     p_status.set_defaults(func=cmd_report, report_object="status")
@@ -1547,28 +1582,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_migrate = sub.add_parser("migrate")
     add_common(p_migrate)
-    migrate_sub = p_migrate.add_subparsers(dest="migrate_object", required=True)
+    migrate_sub = p_migrate.add_subparsers(dest="migrate_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(migrate_sub, p_migrate)
     p_legacy = migrate_sub.add_parser("legacy")
     add_common(p_legacy)
     p_legacy.set_defaults(func=cmd_index)
 
     p_write = sub.add_parser("write")
     add_common(p_write)
-    write_sub = p_write.add_subparsers(dest="write_object", required=True)
+    write_sub = p_write.add_subparsers(dest="write_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(write_sub, p_write)
     p_write_json = write_sub.add_parser("processing-json")
     add_common(p_write_json)
     p_write_json.set_defaults(func=cmd_index)
 
     p_export = sub.add_parser("export")
     add_common(p_export)
-    export_sub = p_export.add_subparsers(dest="export_object", required=True)
+    export_sub = p_export.add_subparsers(dest="export_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(export_sub, p_export)
     p_agg = export_sub.add_parser("aggregates")
     add_common(p_agg)
     p_agg.add_argument("--period", choices=("auto", "year", "month", "range"), default="auto")
     p_agg.set_defaults(func=cmd_export)
 
     p_init = sub.add_parser("init")
-    init_sub = p_init.add_subparsers(dest="init_object", required=True)
+    init_sub = p_init.add_subparsers(dest="init_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(init_sub, p_init)
     p_init_cfg = init_sub.add_parser("config")
     p_init_cfg.add_argument("--output")
     p_init_cfg.add_argument("--clobber", action="store_true")
@@ -1576,14 +1615,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_show = sub.add_parser("show")
     add_common(p_show)
-    show_sub = p_show.add_subparsers(dest="show_object", required=True)
+    show_sub = p_show.add_subparsers(dest="show_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(show_sub, p_show)
     p_show_cfg = show_sub.add_parser("config")
     add_common(p_show_cfg)
     p_show_cfg.set_defaults(func=cmd_show)
 
     p_est = sub.add_parser("estimate")
     add_common(p_est)
-    est_sub = p_est.add_subparsers(dest="estimate_object", required=True)
+    est_sub = p_est.add_subparsers(dest="estimate_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(est_sub, p_est)
     for name in ("summarize", "clean", "extract"):
         sp = est_sub.add_parser(name)
         add_common(sp)
@@ -1592,7 +1633,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_extract = sub.add_parser("extract")
     add_common(p_extract)
-    ext_sub = p_extract.add_subparsers(dest="extract_object", required=True)
+    ext_sub = p_extract.add_subparsers(dest="extract_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(ext_sub, p_extract)
     p_search = ext_sub.add_parser("search")
     add_common(p_search)
     p_search.add_argument("--regex")
@@ -1610,7 +1652,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sum = sub.add_parser("summarize")
     add_common(p_sum)
     add_model_options(p_sum)
-    sum_sub = p_sum.add_subparsers(dest="summarize_object", required=True)
+    sum_sub = p_sum.add_subparsers(dest="summarize_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(sum_sub, p_sum)
     for name in ("raw", "merged"):
         sp = sum_sub.add_parser(name)
         add_common(sp)
@@ -1626,9 +1669,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_fix = sub.add_parser("fix")
     add_common(p_fix)
-    fix_sub = p_fix.add_subparsers(dest="fix_object", required=True)
+    fix_sub = p_fix.add_subparsers(dest="fix_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(fix_sub, p_fix)
     p_fix_missing = fix_sub.add_parser("missing")
-    missing_sub = p_fix_missing.add_subparsers(dest="missing_object", required=True)
+    missing_sub = p_fix_missing.add_subparsers(dest="missing_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(missing_sub, p_fix_missing)
     p_fix_sum = missing_sub.add_parser("summaries")
     add_common(p_fix_sum)
     add_model_options(p_fix_sum)
@@ -1636,7 +1681,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_clean = sub.add_parser("clean")
     add_common(p_clean)
-    clean_sub = p_clean.add_subparsers(dest="clean_object", required=True)
+    clean_sub = p_clean.add_subparsers(dest="clean_object", required=True, parser_class=_SubcommandParser)
+    _add_help_subcommand(clean_sub, p_clean)
     p_clean_transcripts = clean_sub.add_parser("transcripts")
     add_common(p_clean_transcripts)
     add_model_options(p_clean_transcripts)
