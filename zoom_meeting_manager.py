@@ -582,15 +582,44 @@ def expected_merged_name(raw_name: str) -> str:
     return clean_filename(f"{raw_name} meeting_saved_closed_caption.txt")
 
 
+class _Progress:
+    """Simple stderr progress indicator for slow directory scans."""
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._interactive = sys.stderr.isatty()
+        self._phase = ""
+
+    def phase(self, label: str) -> None:
+        self._phase = label
+        if self._interactive:
+            sys.stderr.write(f"\r\033[K  scanning {label}...")
+            sys.stderr.flush()
+
+    def tick(self) -> None:
+        self._count += 1
+        if self._interactive and self._count % 20 == 0:
+            sys.stderr.write(f"\r\033[K  scanning {self._phase}... ({self._count} items)")
+            sys.stderr.flush()
+
+    def done(self, total: int) -> None:
+        if self._interactive:
+            sys.stderr.write(f"\r\033[K  found {total} meetings\n")
+            sys.stderr.flush()
+
+
 def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | None = None, end: date | None = None, match: str | None = None) -> list[MeetingRecord]:
     output = Path(output_dir)
     records: dict[str, MeetingRecord] = {}
     match_lower = match.lower() if match else None
+    prog = _Progress()
 
     if input_dir and Path(input_dir).is_dir():
+        prog.phase("raw meetings")
         for child in sorted(Path(input_dir).iterdir()):
             if not child.is_dir():
                 continue
+            prog.tick()
             meeting_date, meeting_dt, title = parse_raw_dir_name(child.name)
             if not in_range(meeting_date, start, end):
                 continue
@@ -618,8 +647,10 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
     for merged_dir in sorted(output.glob("Merged-Transcripts-*")):
         if not merged_dir.is_dir():
             continue
+        prog.phase(merged_dir.name)
         year = merged_dir.name.replace("Merged-Transcripts-", "")
         for path in sorted(merged_dir.glob("*.txt")):
+            prog.tick()
             if path.name.endswith(".summary.txt"):
                 continue
             meeting_date = parse_date_from_name(path.name)
@@ -640,7 +671,9 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
     for cleaned_dir in sorted(output.glob("Cleaned-Transcripts-*")):
         if not cleaned_dir.is_dir():
             continue
+        prog.phase(cleaned_dir.name)
         for path in sorted(cleaned_dir.glob("*.txt")):
+            prog.tick()
             meeting_date = parse_date_from_name(path.name)
             if not in_range(meeting_date, start, end):
                 continue
@@ -651,7 +684,9 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
     for summary_dir in sorted(output.glob("Summaries-*")):
         if not summary_dir.is_dir():
             continue
+        prog.phase(summary_dir.name)
         for path in sorted(summary_dir.glob("*.summary.txt")):
+            prog.tick()
             meeting_date = parse_date_from_name(path.name)
             if not in_range(meeting_date, start, end):
                 continue
@@ -666,13 +701,14 @@ def discover_inventory(input_dir: str | None, output_dir: str, *, start: date | 
             best.summaries.append(SummaryRecord(
                 path=str(path),
                 model=summary_model_from_filename(path, stem),
-                summary_sha256=sha256_file(str(path)),
                 json_path=json_path if Path(json_path).is_file() else None,
             ))
 
     for rec in records.values():
         rec.problems = compute_problems(rec)
-    return sorted(records.values(), key=lambda r: (r.meeting_date or "9999-99-99", r.title.lower()))
+    result = sorted(records.values(), key=lambda r: (r.meeting_date or "9999-99-99", r.title.lower()))
+    prog.done(len(result))
+    return result
 
 
 def find_record_for_file(records: dict[str, MeetingRecord], path: Path) -> MeetingRecord | None:
