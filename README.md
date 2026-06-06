@@ -146,7 +146,7 @@ Every compound command also accepts `help` (e.g. `zmm list help`).
 |---------|-------------|
 | `zmm list meetings` | List all discovered meetings |
 | `zmm list missing [merged\|summaries\|raw]` | Overview table of missing artifacts |
-| `zmm list missing-merged` / `-summaries` / `-raw` | Focused missing-item lists |
+| `zmm list missing-merged` / `-summaries` / `-summary-json` / `-raw` | Focused missing-item lists |
 | `zmm list models [--provider NAME] [--show-stale]` | List models per provider with pricing |
 | `zmm list prompts` | List core + augmentation + example prompts |
 | `zmm report status` | Per-meeting status table |

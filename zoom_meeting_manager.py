@@ -1263,7 +1263,11 @@ def filter_missing(records: list[MeetingRecord], kind: str | None) -> list[Meeti
     if kind in ("merged", "transcripts"):
         return [r for r in records if "missing merged" in r.problems]
     if kind == "summaries":
-        return [r for r in records if "missing summary" in r.problems or "missing summary json" in r.problems]
+        # "missing summaries" means no summary at all — not the lesser case of
+        # a summary that exists but lacks its JSON sidecar.
+        return [r for r in records if "missing summary" in r.problems]
+    if kind == "summary-json":
+        return [r for r in records if "missing summary json" in r.problems]
     if kind == "raw":
         return [r for r in records if "missing raw" in r.problems]
     return []
@@ -2998,14 +3002,16 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(func=cmd_list, list_object=name)
     p_missing = list_sub.add_parser("missing")
     add_common(p_missing)
-    p_missing.add_argument("missing_kind", nargs="?", choices=("all", "merged", "summaries", "raw", "transcripts"), default="all")
+    p_missing.add_argument("missing_kind", nargs="?",
+                           choices=("all", "merged", "summaries", "summary-json", "raw", "transcripts"),
+                           default="all")
     p_missing.set_defaults(func=cmd_list, list_object="missing")
     # Also register "list missing merged" etc. as top-level list subcommands for IPD compliance
     for mk, alias in [("merged", "transcripts")]:
         sp = list_sub.add_parser(f"missing-{mk}", aliases=[f"missing-{alias}"] if alias else [])
         add_common(sp)
         sp.set_defaults(func=cmd_list, list_object="missing", missing_kind=mk)
-    for mk in ("summaries", "raw"):
+    for mk in ("summaries", "summary-json", "raw"):
         sp = list_sub.add_parser(f"missing-{mk}")
         add_common(sp)
         sp.set_defaults(func=cmd_list, list_object="missing", missing_kind=mk)

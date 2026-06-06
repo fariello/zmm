@@ -34,6 +34,12 @@ hardened across correctness, security, tests, docs, usability, and packaging.
   from `--prompt-*` help text (leftover from the removed subdirectory prompt
   convention).
 
+### Fixed
+- `list missing-summaries` (and `list missing summaries`) no longer reports
+  meetings that already have a summary. Previously it also matched meetings
+  whose summary lacked a `.summary.json` sidecar. That distinct case now has
+  its own filter: `list missing-summary-json`.
+
 ### Part-5 follow-ups
 - New `zmm paths [--kind ...]` command: print artifact file paths one per line
   for piping into other tools (P5-F2).

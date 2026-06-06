@@ -156,6 +156,24 @@ def test_filter_missing_categories():
     assert zmm.filter_missing(records, "bogus") == []
 
 
+def test_filter_missing_summaries_excludes_summary_with_no_json():
+    # Regression: a meeting that HAS a summary .txt but lacks the .json sidecar
+    # must NOT be reported by `list missing-summaries` (it has a summary).
+    rec = _rec(raw=True, merged=True, summary=True, summary_json=False)
+    rec.problems = zmm.compute_problems(rec)
+    assert "missing summary json" in rec.problems
+    assert "missing summary" not in rec.problems
+    assert zmm.filter_missing([rec], "summaries") == []
+    # It is reported by the dedicated summary-json filter instead.
+    assert zmm.filter_missing([rec], "summary-json") == [rec]
+
+
+def test_filter_missing_summaries_includes_no_summary():
+    rec = _rec(raw=True, merged=True, summary=False)
+    rec.problems = zmm.compute_problems(rec)
+    assert zmm.filter_missing([rec], "summaries") == [rec]
+
+
 # ----------------------------- build_prompt assembly (P3-T9) ----------------------------- #
 
 class _A:
