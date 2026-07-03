@@ -1,0 +1,25 @@
+id,source_ids,section,status,description,files_changed,commit,validation,reason_not_done,next_step
+20260606-172943-S1-A1,,1,completed,Add repository-review/ to .gitignore,.gitignore,e39b058,git status clean of run dir,,Done
+20260606-172943-S7-X1,20260606-172943-S2-B1,7,completed,Catch invalid --date-range at main() and exit cleanly,zoom_meeting_manager.py,bd310e4,pytest test_main_invalid_date_range_clean_error,,Done
+20260606-172943-S7-X2,20260606-172943-S2-B2,7,completed,parse_json_response rejects non-object reply,zoom_meeting_manager.py,bd310e4,pytest non-object tests,,Done
+20260606-172943-S7-X3,20260606-172943-S2-B3,7,completed,Size clean ProgressReporter from worklist,zoom_meeting_manager.py,bd310e4,pytest test_cmd_clean_dry_run,,Done
+20260606-172943-S7-X6,20260606-172943-S2-E1,7,completed,Parenthesize _error_hint not-found condition,zoom_meeting_manager.py,bd310e4,py_compile+pytest,,Done
+20260606-172943-S7-X7,20260606-172943-S2-M1,7,completed,Document _LAST_USAGE serial assumption,zoom_meeting_manager.py,bd310e4,n/a comment,,Done
+20260606-172943-S7-X15,20260606-172943-S2-B2,7,completed,Tests for non-dict model output (helper+e2e),tests/test_commands.py,bd310e4,pytest,,Done
+20260606-172943-S7-X4,20260606-172943-S2-S2,7,completed,Warn on non-localhost http:// base_url,zoom_meeting_manager.py;tests/test_commands.py,6504aab,pytest test_warn_insecure_base_url,,Done
+20260606-172943-S7-X5,20260606-172943-S2-S1,7,completed,chmod 600 init config with literal api_key,zoom_meeting_manager.py;tests/test_commands.py,6504aab,pytest test_init_config_env_key_not_chmodded,,Done
+20260606-172943-S7-X8,20260606-172943-S3-T5,7,completed,Autouse hermetic _load_model_costs fixture,tests/conftest.py,3c3ed3f,pytest (208 pass),,Done
+20260606-172943-S7-X9,20260606-172943-S3-T1;20260606-172943-S3-T2,7,completed,End-to-end tests for cmd_estimate and cmd_list,tests/test_commands.py,3c3ed3f,pytest,,Done
+20260606-172943-S7-X10,20260606-172943-S3-T4,7,completed,Schema-conformance test for generated summary payload,tests/test_commands.py;pyproject.toml,3c3ed3f,pytest (jsonschema strict path),,Done
+20260606-172943-S7-X12,20260606-172943-S4-D2;20260606-172943-S4-D3;20260606-172943-S4-D4,7,completed,Document flags + add help text + fix list-missing choices,README.md;zoom_meeting_manager.py,e62010e,zmm --help+manual,,Done
+20260606-172943-S7-X13,20260606-172943-S4-D1,7,completed,Reconcile CHANGELOG/README with v0.1.0 tag via [Unreleased],CHANGELOG.md;README.md,e62010e,manual,,Done (no retag)
+20260606-172943-S7-X14,20260606-172943-S2-E3,7,completed,Diagnostics privacy note,README.md,e62010e,manual (already present; added cleartext note),,Done
+20260606-172943-S7-X11,20260606-172943-S6-CI1;20260606-172943-S6-CI2;20260606-172943-S6-CI3,7,completed,Harden CI: 3.14 + .[dev] + build/install smoke,.github/workflows/ci.yml;pyproject.toml,efc4f99,local build+install smoke; YAML+toml parse,,Done
+20260606-172943-S2-E2,20260606-172943-S2-E2,7,deferred,Validate --max>=1,,,,Low value; slice semantics acceptable,Defer
+20260606-172943-S5-U1,20260606-172943-S5-U1,7,deferred,Collapse --prompt-* flags,,,,Public flag rename; user will revisit,Defer
+20260606-172943-S5-U2,20260606-172943-S5-U2,7,deferred,Deferred flag renames,,,,User will revisit,Defer
+20260606-172943-S5-M2,20260606-172943-S5-M2,7,deferred,Package split,,,,Large refactor; tracked in TODO,Defer
+20260606-172943-S6-SCH1,20260606-172943-S6-SCH1,7,deferred,Full runtime jsonschema validation,,,,Best-effort by design; would add runtime dep,Defer
+20260606-172943-S3-T3,20260606-172943-S3-T3,7,deferred,extract search/me tests,,,,Lower value,Defer
+20260606-172943-S3-R1,20260606-172943-S3-R1,7,deferred,cmd_summarize e2e truncation test,,,,Helper well-tested,Defer
+20260606-172943-S6-DEP1,20260606-172943-S6-DEP1,7,wont_do,Remove deprecated/ scripts,,,,Keep for provenance; correctly excluded from build,Record decision
