@@ -7,6 +7,20 @@ All notable changes to zmm are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+- **License changed from MIT to Apache-2.0.** Now licensed under the Apache License 2.0 (see `LICENSE`
+  and the new `NOTICE`). Apache-2.0 requires redistributions and derivative works to retain the
+  `NOTICE` file and display its attribution reasonably prominently ("Based on the original zmm by
+  Gabriele G. R. Fariello — https://github.com/fariello/zmm"), and adds an explicit patent grant.
+  Copyright holder normalized to the full legal name **Gabriele G. R. Fariello** (was "Gabriel
+  Fariello"); author email set to gfariello@fariel.com.
+
+### Added
+- **`NOTICE`** file with the required Apache-2.0 attribution string; **`CITATION.cff`** added for
+  citation; README gained a License/Attribution/Citation section.
+
 ## [0.1.0] - 2026-06-06
 
 Initial release. Standalone `zmm` extracted from a larger repository, then

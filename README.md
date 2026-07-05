@@ -421,8 +421,32 @@ git tag vX.Y.Z && git push --tags
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ---
 
 [Back to top](#zmm--zoom-meeting-manager) · [Changelog](CHANGELOG.md) · [TODO](TODO.md) · [License](LICENSE)
+
+
+---
+
+## License, Attribution & Citation
+
+`zmm` is licensed under the **Apache License 2.0** (see `LICENSE` and `NOTICE`).
+
+**Attribution (required).** Under Apache-2.0 §4(d), any distribution of this software or a
+derivative work must retain the `NOTICE` file and display its attribution reasonably
+prominently. Concretely, derived/redistributed works must include the following, visibly,
+in the project README (or equivalent top-level documentation) and in any "About"/credits
+screen the software presents:
+
+> Based on the original zmm by Gabriele G. R. Fariello (https://github.com/fariello/zmm).
+
+**Citation.** If you use `zmm` in academic or scholarly work, please cite it. GitHub's
+"Cite this repository" button (backed by `CITATION.cff`) provides ready-to-use formats. A
+suggested citation:
+
+> Fariello, Gabriele G. R. *zmm*. 2026. https://github.com/fariello/zmm
+
+The attribution and citation requests impose no warranty or liability on the author; the
+software is provided "AS IS" per the LICENSE.
