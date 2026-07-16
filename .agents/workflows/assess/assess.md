@@ -81,11 +81,24 @@ directory) and a run record (the evidence and report of this assessment, under
 3. **Plan/IPD lifecycle location and format** - where plans live and any required
    structure. Discover the project's existing convention and USE it (do not impose a
    different one): a pending dir (e.g. `.agents/plans/pending/`, `docs/rfcs/`, an ADR
-   dir) and a terminal dir for completed plans (accept whatever exists - `executed/`
-   or `done/`). If none exists, create and use `.agents/plans/pending/` for new IPDs
-   and treat `.agents/plans/executed/` as the terminal dir (the canonical default;
-   `done/` is an accepted alias if the repo already uses it). Record which you chose.
-   The `setup-repo` workflow can establish and document this lifecycle for a repo.
+   dir) and terminal dirs for finished plans. If none exists, create and use the
+   canonical five-state lifecycle: `.agents/plans/pending/` (new/awaiting-approval IPDs),
+   `.agents/plans/executed/` (terminal; implemented, verified, and tested),
+   `.agents/plans/superseded/` (replaced by a better/subsequent plan; kept for the
+   record), `.agents/plans/not-executed/` (deliberately decided against, no replacement),
+   and `.agents/plans/reusable/` (recurring plans meant to be re-run repeatedly, e.g. a
+   periodic audit or rollout runbook - these stay here rather than moving on after a run).
+   Plan files are named `YYYYMMDD-HHMM-NN-<slug>.md` (local date+time; `NN` a two-digit
+   per-minute sequence, `00` reserved for an orchestrator, `01+` otherwise; lowercase-kebab
+   slug). Never file an un-run plan in `executed/`;
+   retire a plan by prepending `RETIRED YYYY-MM-DD: <reason>; superseded by <path/commit>`
+   and `git mv`ing it to `superseded/` or `not-executed/` (never silently delete).
+   `done/` is an accepted alias for `executed/` if a repo already uses it; respect
+   whatever exists. Record which you chose. The `setup-repo` workflow can establish and
+   document this lifecycle for a repo. Beyond the directory (disposition), each plan's
+   front-matter `Status:` records READINESS: `draft` -> `to-review` -> `reviewed` ->
+   `approved`, then a terminal status mirroring the dir (see `templates/ipd.md` for the
+   canonical vocabulary). A newly-written IPD is born `to-review`.
 4. **Contributor contract** - `AGENTS.md`/`CONTRIBUTING.md` for plan/spec-sync rules.
 5. **Apply the review scope exclusions** from `../release-review/00-run-protocol.md`:
    do not assess the framework's own directory (`.agents/workflows/`) or
@@ -111,14 +124,20 @@ Then read the selected lens file and adopt its focus, lead personas, and rubric.
 4. **Guard scope (KISS):** the Complexity axis is the counterweight to fix-by-default.
    Flag over-scope (untraceable to a need - propose removal/deferral) and under-scope
    (a needed capability that is missing - propose adding it). Do not gold-plate.
-5. **Write the IPD** to the pending-plans directory using `templates/ipd.md`, named
-   with a date and the concern, e.g.
-   `<plans-pending>/YYYY-MM-DD-assess-<concern>.md`.
+5. **Write the IPD** to the pending-plans directory using `templates/ipd.md`, named per
+   the project's filename convention (canonical: `YYYYMMDD-HHMM-NN-<slug>.md`, local
+   date+time, `NN` a two-digit per-minute sequence with `00` reserved for an orchestrator),
+   e.g. `<plans-pending>/YYYYMMDD-HHMM-NN-assess-<concern>.md`. Set the IPD's front-matter
+   `Status: to-review` (assess produces a complete proposal, which is review-ready by
+   default; use `draft` only if you are deliberately emitting a stub), and add the first
+   `## Workflow history` line: `- <date> /assess <concern> (<agent/model>): assessed;
+   proposed N changes`.
 6. **Write the run record** to `workflow-artifacts/assess-<concern>/<RUN_ID>/` (see the
    next section) so the report and evidence are durable, not just shown in chat.
-7. **Commit** the IPD and the run record (they are committed deliverables by default,
-   the same policy as release-review; keep local only if the user asks). Do not commit
-   unrelated changes; run `git status --short` first.
+7. **Commit** the IPD and the run record, and NEVER push (commit-only; no remote changes).
+   They are committed deliverables by default (the same policy as release-review; keep
+   local only if the user asks). Do not commit unrelated changes; run `git status --short`
+   first.
 8. **Report and stop.** Present the report (below) to the user with the IPD and run-
    record paths, and ask them to review and approve (optionally via `plan-review`)
    before execution. Do not execute.

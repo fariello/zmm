@@ -12,7 +12,7 @@ After installation (via `install-workflows.py` at the agent-workflows repo root,
 /release-review
 ```
 
-Runs the full workflow, including audit, implementation, validation, final report, and push/no-push decision.
+Runs the full workflow, including audit, implementation, validation, final report, and push/no-push decision. The final report ENDS with an unmissable, ruled `RELEASE REVIEW DECISION` block (recommendation + named blocking/pending items + an explicit "AWAITING YOUR GO/NO-GO ... nothing is pushed until you do" line) as the literal last output. Nothing is pushed without your explicit GO; on approval, Section 9 release execution pushes and then VERIFIES CI via `gh` (bounded-timeout poll, reporting every failing job on red, degrading gracefully when `gh` is unavailable or the remote is not GitHub).
 
 ```text
 /release-review-plan
@@ -65,17 +65,24 @@ This review must also, on every run:
 
 - **Reconcile any `TODO.md`/backlog/roadmap and `TODO`/`FIXME` code markers** against the release: triage each item, fix or escalate the ones that should not ship, update `TODO.md` to stay honest, and record the triage in `todo-reconciliation.md`.
 - **Loudly warn about pending agent plans and staged prompts**: discover any prepared-but-unexecuted plans/IPDs (`.agents/plans/pending/`, IPDs marked pending) or queued prompt files, and surface in-scope pending items as a prominent WARNING in the Go/No-Go and summary. Such items block a clean GO until the user decides on them; the review never auto-executes them.
+- **Early pre-flight gate**: before the audit, take a cursory look at `TODO.md`/backlog items and pending plans/prompts and, when interactive AND a real signal exists (a pending plan/prompt, a status/location mismatch, or an obviously risky item), ask ONCE whether to handle it first - naming the items, verdict-free (never asserting readiness). When the look is clean, skip the ask and proceed silently. On "yes" the review ABORTS so you can discuss/address them first (saving a full run); on "no" it forgets the glance and proceeds. When non-interactive it skips the ask and relies on the loud Go/No-Go warning. This is an early safety net in addition to the thorough final-report reconciliation.
 - **Honor the repository's guiding principles** (`GUIDING_PRINCIPLES.md` or equivalent) as a binding contract, or apply the universal fallback principles in `00-run-protocol.md`; record per-principle adherence in `guiding-principles-assessment.md`.
 - **Hold the self-documenting / learn-as-you-go bar**: file and, where safe, fix anything that forces a user to read the manual to do a basic task.
 - **Ensure durable cold-start knowledge exists**: establish/maintain intent, philosophy, architecture, and design-decision rationale in the project's own docs (respecting its existing convention), so a no-context LLM or engineer can orient. Recover intent from the current conversation as a guarded secondary source; verify material claims with the user or mark them as assumptions.
 - **Treat memory/resource and live-interaction-surface correctness as first-class** per `00-run-protocol.md`.
 - **Produce a mandatory per-phase report** for each section covering what was done, why, and what was considered but deliberately not done.
 
-## Optional controlled parallel audit mode
+## Parallel audit mode (auto-engaged; TRIAL)
 
-After Section 1 establishes the repository baseline, the agent may use controlled parallel read-only audit lanes for parts of Sections 2 through 6 when the repository is large, unfamiliar, or has multiple independent surfaces such as code, tests, docs, schemas, packaging, and CI.
+After Section 1 establishes the repository baseline, the review AUTO-ENGAGES controlled parallel
+read-only audit lanes for Sections 2 through 6 whenever there are 2 or more independent audit surfaces
+(code, tests, docs, schemas, packaging, CI, deprecation). Sections 7, 8, and 9 always stay serial. This
+is not a new command; `/release-review` engages the mode per the canonical convention (a `--parallel` /
+`--no-parallel` instruction can force it either way). It is marked TRIAL while experience accumulates.
+The full canonical definition (auto-engage trigger, lane safety rules, coordinator-owns-mutations) lives
+in `00-run-protocol.md` ("Auto-parallel read-only audit lanes"); the rules below are its summary.
 
-Parallelism is optional. Use it only when it improves review quality.
+With fewer than 2 independent surfaces the review stays fully serial (fan-out is pure overhead).
 
 Rules:
 

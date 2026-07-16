@@ -50,7 +50,7 @@ Before writing the final report:
 3. **Guiding-principles adherence.** Finalize `guiding-principles-assessment.md` with a per-principle verdict and any unresolved `GP` findings.
 4. **Self-documenting / learn-as-you-go.** State whether a novice could learn the project as they go without a manual or course, and list any remaining `U` blockers.
 5. **Pending agent plans and staged prompts (loud warning).** Review the pending-plans/staged-prompts inventory from Section 1. For each pending IPD or queued prompt that is not clearly out-of-scope for this release, raise a prominent WARNING. If ANY in-scope pending plan or staged prompt exists, the final report's Go/No-Go and its summary MUST call it out loudly (a bold `WARNING: N pending plan(s)/prompt(s) not executed` line naming each item and its path), and the recommendation may not be a clean GO - it is at most CONDITIONAL GO with those items listed as explicit prerequisites or decisions for the user. Also flag any status/location mismatch (a plan in `done/` still marked pending, or a `pending/` plan marked executed) as a WARNING to resolve. Do not execute the plans or prompts; surface them for a human decision. If none exist, state that explicitly ("no pending plans or staged prompts").
-6. **Cold-start orientation verdict (`KD`).** Judge whether a competent engineer or an LLM with zero prior context could, from the project's own tracked docs alone, understand its intent, goals, philosophy, architecture/approach, and the rationale behind major decisions. Score each of the four knowledge areas (intent/overview, principles, architecture, decision rationale) as adequate / thin / missing, and list remaining `KD` findings. Note any orientation-doc passages still marked "inferred, needs confirmation" so the user can verify them. This is a scored assessment, not a hard release blocker: gaps are findings (fixed under the Fix Bar); only an egregious absence of orientation knowledge should weigh on the GO/CONDITIONAL-GO recommendation, and then as a documented condition, not an automatic NO-GO.
+6. **Cold-start orientation verdict (`KD`).** Judge whether a competent engineer or an LLM with zero prior context could, from the project's own tracked docs alone, understand its intent, goals, philosophy, architecture/approach, and the rationale behind major decisions. Score each of the four knowledge areas (intent/overview, principles, architecture, decision rationale) as adequate / thin / missing, and list remaining `KD` findings. Note any orientation-doc passages still marked "inferred, needs confirmation" so the user can verify them. This is a scored assessment, not a hard release blocker: gaps are findings (fixed under the Fix Bar); only an egregious absence of orientation knowledge should weigh on the GO/CONDITIONAL GO recommendation, and then as a documented condition, not an automatic NO-GO.
 
 ## Final bug/security sanity audit
 
@@ -152,9 +152,15 @@ A CONDITIONAL GO is appropriate when the project is mostly ready but has limited
 
 If release concepts do not apply to the repository, provide a readiness assessment for the nearest equivalent, such as major run readiness, internal adoption readiness, or handoff readiness.
 
-## Section 9 handoff
+## Section 9 handoff and the release consent decision tree
 
-If the recommendation is GO or CONDITIONAL GO and the user explicitly approves performing the release, proceed to `09-release-execution.md`. Do not begin release execution automatically or without that approval. If the recommendation is NO-GO, do not proceed to Section 9.
+The GO / CONDITIONAL GO / NO-GO recommendation is unchanged (it is the reviewer's verdict). What the user does ON approval is a SEPARATE choice, presented as a short decision tree so "approve the review" is never silently conflated with "cut a release". On a NO-GO, offer NO rungs and do not proceed to Section 9. On a GO or CONDITIONAL GO, the terminal `RELEASE REVIEW DECISION` block MUST present exactly these rungs, with the safe option as the default, each naming its consequence in one line:
+
+- **(A) Close out the review only [DEFAULT].** Approve the findings and disposition. NOTHING is tagged, pushed, released, or published. Fully reversible; no artifact is created.
+- **(B) Cut a release CANDIDATE.** Create an annotated `vX.Y.Z-rc.N` pre-release tag only (pushing it is a separate, default-NO confirmation in Section 9). Signals "this is the intended version, NOT live"; does NOT create a GitHub Release and does NOT publish to a registry.
+- **(C) FULL RELEASE.** Proceed to `09-release-execution.md`, where each externally-visible action (tag, push, GitHub Release, publish) is named and separately confirmed, default-NO. Only a bare final `vX.Y.Z` (no `-rc`) is used here.
+
+The primary fork the user sees is candidate-versus-full, so the two cannot be conflated at the moment of consent. Do not begin any release execution automatically or without explicit approval of a specific rung. A bare `vX.Y.Z` tag means "intended for a registry release"; anything not registry-bound MUST be an `-rc.N` candidate (or left untagged). See `RELEASING.md`.
 
 ## Exit gate
 
@@ -167,4 +173,5 @@ The run is complete only when all are true (MUST):
 - [ ] Pending-plans / staged-prompts gate applied: any in-scope pending IPD or staged prompt (or status/location mismatch) is loudly WARNED in the Go/No-Go and summary and blocks a clean GO; absence stated explicitly.
 - [ ] `11-push-plan.md` and restart assessment (with loop guard) recorded.
 - [ ] `12-final-response.md` saved per `templates/final-response.md` (both tables + all sections) and presented to the user.
+- [ ] The mandated `RELEASE REVIEW DECISION` block is APPENDED as the literal last output of the presented response (recommendation + named blocking/pending items +, on a GO/CONDITIONAL GO, the 3-rung consent decision tree with rung A "close out only" as the default + the "AWAITING YOUR GO/NO-GO ... NOTHING IS PUSHED UNTIL YOU DO" line); nothing prints after it.
 - [ ] Per-phase report written; checkpoint recorded and committed.

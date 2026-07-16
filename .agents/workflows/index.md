@@ -1,9 +1,10 @@
 # Agent Workflows
 
-<!-- WORKFLOWS-VERSION: 20260704-06 -->
-Version: `20260704-06` (source of truth: `.agents/workflows/VERSION`). Scheme:
-`YYYYMMDD-NN` (calendar date plus a same-day sequence). The installer stamps this into
-each target so `/list-workflows` and `setup-repo` can report the installed version.
+<!-- WORKFLOWS-VERSION: 1.2.1 -->
+Version: `1.2.1` (source of truth: `.agents/workflows/VERSION`). Scheme:
+git-tag-driven semantic versioning (baseline `v1.0.0`); `VERSION` is DERIVED from the
+tag, not hand-edited. The installer stamps this into each target so `/list-workflows`
+and `setup-repo` can report the installed version.
 
 Reusable, tool-agnostic agent workflows for this repository. Each workflow is a
 capability with its own subdirectory here. To run one, read and execute its body
@@ -25,7 +26,9 @@ focusing on different concerns; leave it `-` when not used.
 |---|---|---|---|
 | release-review | .agents/workflows/release-review/README.md | - | Full pre-release repository review and hardening: deep audit through eight personas, the Fix Bar, fix/validate/report, push and release decisions. |
 | release-review-plan | .agents/workflows/release-review/README.md | - | Release review in planning-only mode: audit and consolidated implementation plan, stopping before implementation. |
-| plan-review | .agents/workflows/plan-review/plan-review.md | - | Pre-execution plan reviewer: review and improve a proposed implementation plan before any code is written (edits planning documents only). |
+| plan-review | .agents/workflows/plan-review/plan-review.md | - | Pre-execution plan reviewer: review and improve a proposed implementation plan before any code is written (edits planning documents only). Single-file version. |
+| plan-review-long | .agents/workflows/plan-review-long/plan-review-long.md | - | Same as plan-review, in a multi-file orchestrator form: a small memory-kernel orchestrator that loads one step at a time (discover/snapshot, review/revise, resolve/finalize) with a shared rubric and report template, to reduce directive drift on long runs. Kept in deliberate parity with the single-file plan-review. |
+| verify-execution | .agents/workflows/verify-execution/verify-execution.md | - | Post-execution cross-check: verify an EXECUTED plan (IPD) was actually done as written (read the diff, check each required change, re-run the repo's real validation via /verify), always write a run record, and EMIT a corrective IPD for any gap (never fixes in place; commits only its own files path-scoped, safe to run while another agent works). Verdict MATCHES/DIVERGES/INCOMPLETE + GO/NO-GO on "truly executed?". Used to cross-check another agent's or a past session's work. |
 | getting-started | .agents/workflows/getting-started/getting-started.md | - | Guided in-agent tour and router for newcomers: detect repo/toolkit context, explain the mental model briefly, ask the user's goal, and route to the right workflow (offering to run it with consent) with the exact invocation for their tool. Orients and routes; references `/list-workflows` for the full catalog. Read-only by default. |
 | list-workflows | .agents/workflows/list-workflows/list-workflows.md | - | Toolkit discovery: list what this toolkit can do (core workflows, the `/assess` concerns, any personas) and the installed framework version, read from the manifest. Optional filter argument (`/list-workflows security`, `/list-workflows assess`). Read-only. |
 | verify | .agents/workflows/verify/verify.md | - | Proof, not prose: discover the repo's own test/lint/build/type-check commands (`run_checks.py`), run the approved ones (confirm-per-check by default, `--yes` for batch; hard denylist for network/deploy/publish/install), and capture real exit codes/metrics/logs as committed evidence. Honest about what could not be verified. Reused by release-review and assess. |
@@ -53,6 +56,7 @@ focusing on different concerns; leave it `-` when not used.
 | assess-testing | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/testing.md | Assess testing rigor and completeness and propose an IPD. |
 | assess-architecture | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/architecture.md | Assess architecture and extensibility and propose an IPD. |
 | assess-api-design | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/api-design.md | Assess public API/contract design and propose an IPD. |
+| assess-data-modeling | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/data-modeling.md | Assess object and data-modeling quality and propose an IPD. |
 | assess-compatibility | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/compatibility.md | Assess compatibility and interoperability and propose an IPD. |
 | assess-supply-chain | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/supply-chain.md | Assess dependencies/licensing/supply-chain and propose an IPD. |
 | assess-guiding-principles | .agents/workflows/assess/assess.md | .agents/workflows/assess/lenses/guiding-principles.md | Assess conformance to the project's guiding principles and propose an IPD. |
@@ -101,8 +105,9 @@ proposing.
 - **`/setup-repo`** walks the repo owner through best-practices and security setup -
   installing tools (via `setup-repo/tools/setup_tools.py`, which detects and, on
   confirmation, installs gitleaks/pre-commit/detect-secrets), adding secret-scanning CI
-  and a local hook, the **plan/IPD lifecycle** (`.agents/plans/pending/` +
-  `executed/` plus a documented contract in `AGENTS.md`/`CONTRIBUTING` so coding agents
+  and a local hook, the **plan/IPD lifecycle** (`.agents/plans/pending/` + `executed/` +
+  `superseded/` + `not-executed/` + `reusable/` plus a documented contract in
+  `AGENTS.md`/`CONTRIBUTING` so coding agents
   follow it), `.gitignore` hygiene, hygiene files, a stack CI baseline, a pre-commit
   config, dependency hygiene, and branch-protection advice. Ask-before-each-change,
   stages (does not commit). It is **idempotent and drift-aware**: the same command is a
@@ -194,14 +199,14 @@ for the full catalog rather than duplicating it or the README.
   sibling (`../release-review/...`).
 - The installer copies these workflows into a target repository, generates the
   per-tool command shims from this manifest (passing the `lens` to shared-body
-  commands), and adds a one-line pointer to `AGENTS.md`. See
-  `install-workflows.py`.
+  commands), and adds a one-line pointer to `AGENTS.md`. See the `aw install` CLI
+  (`agent_workflows/engine.py`).
 - **Parameterized command surface (assess and advise):** the single `assess` and `advise`
   rows each generate one parameterized command (`/assess <concern>`, `/advise <persona>`).
   The `assess-<concern>` and `advise-<persona>` rows are the **catalog** (the source of
   truth for each concern's lens / each persona's charter); the installer does NOT generate
   a shim per catalog row (`is_concern_catalog_row` / `CATALOG_ROW_PREFIXES` in
-  `install-workflows.py`). Re-running the installer on an older install prunes retired
+  `agent_workflows/engine.py`). Re-running the installer on an older install prunes retired
   per-item shims automatically. The run-record directory conventions remain
   `workflow-artifacts/assess-<concern>/<RUN_ID>/` and
   `workflow-artifacts/advise-<persona>/<RUN_ID>/`.

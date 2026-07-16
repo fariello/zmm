@@ -194,6 +194,17 @@ Repositories driven by agent workflows often accumulate **planned-but-not-execut
 4. **Surface loudly.** Any pending plan or staged prompt that is not clearly out-of-scope for this release is a WARNING that must appear prominently in the Section 8 Go/No-Go and summary (see `08-final-ship-review.md`). Pending in-scope plans push the recommendation off a clean GO toward CONDITIONAL GO with the pending items named as prerequisites/decisions.
 5. Record the inventory and per-item classification and reflect it in the Section 8 report.
 
+## Section 1 pre-flight gate (early, interactive: ask before auditing)
+
+After Section 1 discovery (above) and BEFORE any audit work - specifically BEFORE starting any parallel audit lanes, so an abort saves the whole run - apply an early, interactive pre-flight gate. This is an EARLY safety net that is DISTINCT from, and in addition to, the thorough Section 7 TODO reconciliation and the Section 8 pending-plans WARNING (all of which remain). Its purpose: catch "did you mean to ship without handling this?" before spending a full review.
+
+1. **Cursory look, not a second triage.** Take a genuinely cursory pass over (a) the discovered `TODO.md`/backlog items and (b) the discovered pending agent plans (`.agents/plans/pending/`) and staged prompts (`.agents/prompts/pending/`), including any status/location mismatch. You are only judging whether a REAL SIGNAL exists that should be confirmed, addressed, or actively ignored before contemplating a release: a pending plan/IPD or staged prompt, a status/location mismatch, or an obviously risky/blocking TODO item. You are not scoring every item.
+2. **Ask ONLY when a real signal exists.** If the cursory look surfaces such a signal, ASK the user a single, bounded pre-flight question that names the specific items found (TODO items AND pending plans/prompts together, one interruption, not two). If the look is CLEAN (no such signal), SKIP the ask and proceed silently to the audit - do NOT manufacture a question, and do NOT manufacture a "nothing found" verdict.
+3. **Verdict-free framing (MUST).** When the ask fires, it states WHAT WAS FOUND and asks what to do about it; it MUST NOT assert or imply any release-readiness verdict - no "no blockers", "looks clean", "release-ready", or pre-classifying a signal as "not a blocker". The readiness call is Section 8's alone, earned from the full audit. General principle: a gate question must not leak the verdict the gate precedes. Phrase it item-anchored, e.g.: "Found <items>. Handle any of these before I audit (abort to discuss), or proceed?"
+4. **On "yes, address first" -> ABORT (a first-class outcome).** Stop before the audit. Record the abort in `00-run-metadata.md` (which gate fired, which items, the user's answer) and tell the user how to resume once they have discussed/addressed the items. This ABORTED-PRE-FLIGHT result is distinct from a Section 8 NO-GO (which follows a full audit).
+5. **On "no, proceed" (or a clean skip) -> forget and proceed.** Discard the cursory impressions entirely: do NOT carry them into findings, `implementation-plan.md`, severities, or the report. The thorough Section 7 reconciliation runs INDEPENDENTLY from the full discovered list, so this early glance must leave zero residue and cannot bias the review.
+6. **Non-interactive fallback.** If there is no TTY (another IDE, a CI runner), SKIP the interactive ask and rely on the existing loud Section 8 pending-plans WARNING / TODO reconciliation. Never silently drop the signal and never block a headless run - identical posture to the "Asking for missing intent" bounded exception above.
+
 ## Where cross-cutting concerns are performed (ownership map)
 
 Several concerns span the whole review. To avoid both omission and pointless repetition, each has a defined owner section for the substantive work; other sections only contribute incremental findings. Do the substantive work once, in the owner section, and reference it elsewhere.
@@ -332,11 +343,26 @@ If running in OpenCode and TodoWrite is available, use TodoWrite for live progre
 
 Do not use TodoWrite as the official record. If TodoWrite is unavailable, continue without it and record progress in the run directory.
 
-## Optional controlled parallel audit mode
+## Auto-parallel read-only audit lanes (canonical convention; TRIAL)
 
-After Section 1 completes the repository baseline, the main agent may use controlled parallel read-only audit lanes for Sections 2 through 6 when doing so is likely to improve review breadth, reduce missed findings, or manage a large repository more effectively.
+This is the single canonical definition of controlled parallel read-only audit lanes for the whole
+workflow family (release-review AND the plan-review workflows, which reference this file as a shared
+sibling policy). It is marked TRIAL while experience accumulates. Reviewing several independent units
+one at a time single-threads the expensive, parallelizable part (reading source, verifying every
+`path:line` claim, running the rubric / personas / security lens); the WRITES and the interactive human
+decisions are not parallelizable and stay serial through the coordinator.
 
-Parallel audit mode is optional. Do not force it for small or simple repositories.
+AUTO-ENGAGE TRIGGER: after Section 1 completes the repository baseline, the main agent (the
+"coordinator") AUTOMATICALLY fans out read-only audit lanes for the audit phase (release-review Sections
+2 through 6; a plan-review batch's per-plan review/verify phase) WHENEVER there are 2 OR MORE independent
+eligible units to audit (2+ plans in a plan-review batch; or 2+ independent audit surfaces in a
+release-review, from the allowed lane scopes below). With 1 or 0 units, stay fully serial (fan-out is
+pure overhead). A flag or explicit instruction MAY force the mode on or off (e.g. `--parallel` /
+`--no-parallel` or an equivalent instruction), but the DEFAULT is the automatic >=2 rule.
+
+The lanes run in parallel with EACH OTHER; the coordinator BLOCKS until they all return (this is
+concurrent analysis, not fire-and-forget background execution). Do not force fan-out for a small or
+simple single-unit review.
 
 Allowed lane scopes include:
 
@@ -347,9 +373,12 @@ Allowed lane scopes include:
 5. Schemas, data contracts, migrations, examples, fixtures, and serialized outputs.
 6. Deprecated, obsolete, stale, unused, duplicated, or superseded code and artifacts.
 
-Rules for parallel audit lanes:
+Rules for parallel audit lanes (SAFETY RULES; unchanged by the auto-engage promotion, they are the
+reason fan-out is safe). The coordinator is the sole writer and decision-maker: it also runs a
+CROSS-UNIT conflict/overlap pass (lanes cannot see each other's work) and resolves all open questions
+interactively with the human before any edit or commit.
 
-1. The main agent must complete Section 1 before starting parallel lanes.
+1. The main agent (coordinator) must complete Section 1 before starting parallel lanes.
 2. Lanes must be read-only.
 3. Lanes must not edit tracked files.
 4. Lanes must not update official registers directly.
@@ -365,7 +394,12 @@ Rules for parallel audit lanes:
 14. Section 8 final review must remain serial.
 15. Section 9 release execution must remain serial.
 
-If parallel lanes are not used, record that decision in `05-decisions.md` and continue serially.
+When the auto-engage trigger is not met (0 or 1 eligible unit), or a `--no-parallel` instruction forces
+serial, record that decision in `05-decisions.md` and continue serially. HONEST SCOPE REMINDER: parallel
+covers ONLY the read / verify / rubric / propose phase. Synthesis, the cross-unit conflict pass,
+interactive open-question resolution, all in-place edits, all path-scoped commits, and the terminal
+status are serial through the coordinator; the mutation/ship phases (release-review Sections 7, 8, 9)
+never parallelize.
 
 
 ## Live-interaction-surface and data-integrity rule (shared)
@@ -460,6 +494,8 @@ It begins with two tables defined in the template:
 The second table must include audit findings that were identified but not implemented, not only actions that were started and left incomplete. It must include any `LIVE`/High live-interaction-surface finding that was not fixed, flagged `LIVE - needs user decision`; such a finding must never be silently moved into `TODO.md` in place of being reported here. Under the Fix Bar, any unaddressed item was deferred because the fix's Remediation Risk is Medium-High or higher; the Reason must name the axis, not effort/cost.
 
 After the two tables, include every remaining section listed in `templates/final-response.md` (summary of changes, Fix Bar summary, validations run, CI assessment, schema validation, deprecated-code, final bug/security/memory sanity audit, TODO/backlog reconciliation, pending plans / staged prompts, guiding-principles adherence, eight-persona sign-off, self-documenting/learn-as-you-go assessment, documentation/artifact updates, remaining risks, push/no-push decision, GO/CONDITIONAL GO/NO-GO recommendation, restart recommendation, and Section 9 readiness).
+
+Finally, the report MUST END with the mandated DECISION block from `templates/final-response.md` (the ruled `RELEASE REVIEW DECISION` banner: recommendation, named blocking/pending items, and the "AWAITING YOUR GO/NO-GO ... NOTHING IS PUSHED UNTIL YOU DO" line). This block is APPENDED after all the sections above (it does not replace or truncate them) and is the LITERAL last output: nothing - no summary, findings, paths, or commentary - prints after it. It is a forcing function so the human's Go/No-Go call, and the fact that the run has stopped awaiting it, cannot be missed.
 
 ## Restart assessment
 
